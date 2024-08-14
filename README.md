@@ -1,7 +1,7 @@
 # Galaxy cluster mass profiles from gravitational lensing assuming spherical symmetry
 
 Package to infer galaxy cluster mass profiles from lensing data assuming only spherical symmetry (and not assuming a specific mass profile such as an NFW profile).
-See [arXiv:xxxx.yyyyy](https://arxiv.org/abs/xxxx.yyyyy) for details.
+See [arXiv:2408.07026](https://arxiv.org/abs/2408.07026) for details.
 
 ## Installation
 
