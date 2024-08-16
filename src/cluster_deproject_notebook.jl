@@ -289,10 +289,23 @@ end
 
 # ╔═╡ 9269044a-217b-48ef-b6f1-266a75890956
 begin
+	# How to extrapolate G, Gf, f beyond last data point
 	abstract type AbstractExtrapolate end
 	struct ExtrapolatePowerDecay <: AbstractExtrapolate
 		# Only positive values are allowed!
 		n::Float64
+	end
+
+	# Hot to interpolate G, Gf, f, in between the discrete data points
+	# NB: This also controls whether the integral I(R) and J(R) are calculated from
+	#     ODEs of the form dI/dR = ... (for linear-spce) or from ODEs of the form 
+	#     dI/d ln R = ... (for log-space)
+	abstract type AbstractInterpolate end
+	struct InterpolateR <: AbstractInterpolate
+		order::UInt8
+	end
+	struct InterpolateLnR <: AbstractInterpolate
+		order::UInt8
 	end
 end
 
@@ -334,7 +347,9 @@ Boundary condition:
 
 # ╔═╡ 3e5aa347-e19e-4107-a85e-30aa2515fb3a
 begin
-	function calculate_I_R∞(extrapolate::ExtrapolatePowerDecay; RMpc, Gf)
+	function calculate_I_R∞(
+		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateR; RMpc, Gf
+	)
 		# Solve in terms of X = Rmax - R so we can impose I(RMax) as an *initial*
 		# condition (rather than a final condition). Because that's what `ODEProblem`
 		# wants
@@ -353,6 +368,30 @@ begin
 		RMpc -> let
 			@assert RMpc <= RMpcMax "I(R) only calculated up to last bin center!"
 			s(RMpcMax - RMpc, idxs=1)
+		end
+	end
+	
+	function calculate_I_R∞(
+		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateLnR; RMpc, Gf
+	)
+		# Solve in terms of X=ln(Rmax)-ln(R) so we can impose I(RMax) as an *initial*
+		# condition (rather than a final condition). Because that's what `ODEProblem`
+		# wants
+		n = extrapolate.n
+		RMpcMax = maximum(RMpc)
+		RMpcMin = minimum(RMpc)
+		prob = ODEProblem(
+			(I, p, X) -> let
+				RMpc = RMpcMax*exp(-X) # same as exp(ln(Rmax) - X)
+				SA[2*Gf(RMpc)/(1 - Gf(RMpc))] # RHS of I'(X) = ... NB: no 1/RMpc
+			end,
+			SA[-(2/n)*log(1 - Gf(RMpcMax))], # Initial condition
+			(0, log(RMpcMax)-log(RMpcMin)) # R interval where to solve
+		)
+		s = solve(prob, Tsit5())
+		RMpc -> let
+			@assert RMpc <= RMpcMax "I(R) only calculated up to last bin center!"
+			s(log(RMpcMax/RMpc), idxs=1)
 		end
 	end
 end
@@ -377,7 +416,10 @@ For ..
 
 # ╔═╡ 64e5f173-11be-4dbf-b9ab-f652c50d9c09
 begin
-	function calculate_J_R∞(extrapolate::ExtrapolatePowerDecay; RMpc::typeof([1.0]), Gf, Ĝ, I)
+	function calculate_J_R∞(
+		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateR;
+		RMpc::typeof([1.0]), Gf, Ĝ, I
+	)
 		# Solve in terms of X = Rmax - R so we can impose J(RMax) as an *initial*
 		# condition (rather than a final condition). Because that's what `ODEProblem`
 		# wants
@@ -401,19 +443,46 @@ begin
 			s(RMpcMax - RMpc, idxs=1)
 		end
 	end
+	function calculate_J_R∞(
+		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateLnR;
+		RMpc::typeof([1.0]), Gf, Ĝ, I
+	)
+		# Solve in terms of X=ln(Rmax)-ln(R) so we can impose J(RMax) as an *initial*
+		# condition (rather than a final condition). Because that's what `ODEProblem`
+		# wants
+		n = extrapolate.n
+		RMpcMax = maximum(RMpc)
+		RMpcMin = minimum(RMpc)
+		f̂∞ = Gf(RMpcMax)/Ĝ(RMpcMax)
+		prob = ODEProblem(
+			(J, p, X) -> let
+				RMpc = RMpcMax*exp(-X) # same as exp(ln(Rmax) - X)
+				# RHS of I'(X) = ... NB: no 1/RMpc
+				SA[2*(1/exp(-I(RMpc)))*Ĝ(RMpc)/(1 - Gf(RMpc))]
+			end,
+			# Initial condition
+			SA[(1/f̂∞)*((1 - Gf(RMpcMax))^(-2/n) - 1)], 
+			(0, log(RMpcMax)-log(RMpcMin)) # R interval where to solve
+		)
+		s = solve(prob, Tsit5())
+		RMpc -> let
+			@assert RMpc <= RMpcMax "J(R) only calculated up to last bin center!"
+			s(log(RMpcMax) - log(RMpc), idxs=1)
+		end
+	end
 end
 
 # ╔═╡ 49397343-2023-4627-89e6-74170976c890
 begin
 	function get_interpolation_RMpc(
-		extrapolate::ExtrapolatePowerDecay; interpolation_order::Int64,
+		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateR;
 		RMpc::typeof([1.0]), values
 	)
 		func = BSplineKit.extrapolate(
 			BSplineKit.interpolate(
 				RMpc, values,
 				# Linear interpolation = BSplineOrder(2), so +1
-				BSplineKit.BSplineOrder(interpolation_order+1)
+				BSplineKit.BSplineOrder(interpolate.order+1)
 			),
 			# Just b/c of floating point inexactness. We don't actually need values 
 			# outside where they're defined
@@ -430,18 +499,57 @@ begin
 			func(RMpc)
 		end
 	end
-	function get_interpolation_RMpc_flat(;
-		interpolation_order::Int64,
+	function get_interpolation_RMpc(
+		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateLnR;
+		RMpc::typeof([1.0]), values
+	)
+		logfunc = BSplineKit.extrapolate(
+			BSplineKit.interpolate(
+				log.(RMpc), values,
+				# Linear interpolation = BSplineOrder(2), so +1
+				BSplineKit.BSplineOrder(interpolate.order+1)
+			),
+			# Just b/c of floating point inexactness. We don't actually need values 
+			# outside where they're defined
+			BSplineKit.Flat()
+		)
+
+		maxRMpc = maximum(RMpc)
+		boundaryVal = logfunc(log(maxRMpc))
+		n = extrapolate.n
+		RMpc -> if RMpc > maxRMpc
+			# Asymptotically we fall off as 1/R^n
+			boundaryVal * (maxRMpc/RMpc)^n
+		else
+			logfunc(log(RMpc))
+		end
+	end
+	function get_interpolation_RMpc_flat(
+		interpolate::InterpolateR;
 		RMpc::typeof([1.0]), values
 	)
 		BSplineKit.extrapolate(
 			BSplineKit.interpolate(
 				RMpc, values,
 				# Linear interpolation = BSplineOrder(2), so +1
-				BSplineKit.BSplineOrder(interpolation_order+1)
+				BSplineKit.BSplineOrder(interpolate.order+1)
 			),
 			BSplineKit.Flat()
 		)
+	end
+	function get_interpolation_RMpc_flat(
+		interpolate::InterpolateLnR;
+		RMpc::typeof([1.0]), values
+	)
+		logfunc = BSplineKit.extrapolate(
+			BSplineKit.interpolate(
+				log.(RMpc), values,
+				# Linear interpolation = BSplineOrder(2), so +1
+				BSplineKit.BSplineOrder(interpolate.order+1)
+			),
+			BSplineKit.Flat()
+		)
+		RMpc -> logfunc(log(RMpc))
 	end
 end
 
@@ -557,29 +665,29 @@ begin
 		G, # typeof([1.0*u"Msun/pc^2"]),
 		f::typeof([1.0/u"Msun/pc^2"]),
 		R::typeof([1.0*u"Mpc"]),
-		interpolation_order=1,
+		interpolate::I,
 		extrapolate::E
-	) where E<:AbstractExtrapolate
+	) where {E<:AbstractExtrapolate,I<:AbstractInterpolate}
 		@assert length(G) == length(f) == length(R) "G, f, R must have same length"
 		@assert !any(G .* f .>= 1.0) "G*f must be < 1"
 	
 		RMpc = R ./ u"Mpc"
 		Gf_unchecked = get_interpolation_RMpc(
-			extrapolate; interpolation_order=interpolation_order,
+			extrapolate, interpolate;
 			RMpc=RMpc, values=G .* f
 		)
 		Ĝ = get_interpolation_RMpc(
-			extrapolate; interpolation_order=interpolation_order,
+			extrapolate, interpolate;
 			RMpc=RMpc, values=G ./ u"Msun/pc^2"
 		)
 		f̂ = get_interpolation_RMpc_flat(
-			interpolation_order=interpolation_order,
+			interpolate;
 			RMpc=RMpc, values=f .* u"Msun/pc^2"
 		)
 		# Make sure that the interpolated Gf is not larger than 1.
 		# Can happen with e.g. quadratic interpolation despite us having checked that
 		# G .* f .< 1.0 holds.
-		Gf = if interpolation_order > 1
+		Gf = if interpolate.order > 1
 			RMpc -> let
 				value = Gf_unchecked(RMpc)
 				@assert value < 1.0 "interpolated G*f must be < 1. Problem are typically too large fluctuations."
@@ -589,8 +697,8 @@ begin
 			Gf_unchecked
 		end
 
-		IR∞ = calculate_I_R∞(extrapolate; RMpc=RMpc, Gf=Gf)
-		JR∞ = calculate_J_R∞(extrapolate; RMpc=RMpc, Gf=Gf, Ĝ=Ĝ, I=IR∞)
+		IR∞ = calculate_I_R∞(extrapolate, interpolate; RMpc=RMpc, Gf=Gf)
+		JR∞ = calculate_J_R∞(extrapolate, interpolate; RMpc=RMpc, Gf=Gf, Ĝ=Ĝ, I=IR∞)
 
 		ΔΣ(RMpc) = (u"Msun/pc^2")*(Ĝ(RMpc)/(1 - Gf(RMpc)))*(
 			1 - exp(-IR∞(RMpc))*f̂(RMpc)*JR∞(RMpc)
@@ -605,21 +713,21 @@ begin
 		G, # typeof([1.0*u"Msun/pc^2"])
 		f::typeof(1.0/u"Msun/pc^2"),
 		R::typeof([1.0*u"Mpc"]),
-		interpolation_order=1,
+		interpolate::I,
 		extrapolate::E
-	) where E<:AbstractExtrapolate
+	) where {E<:AbstractExtrapolate,I<:AbstractInterpolate}
 		@assert length(G) == length(R) "G, R must have same length"
 		@assert !any(G .* f .>= 1.0) "G*f must be < 1"
 	
 		RMpc = R ./ u"Mpc"
 		Gf_unchecked = get_interpolation_RMpc(
-			extrapolate; interpolation_order=interpolation_order,
+			extrapolate, interpolate;
 			RMpc=RMpc, values=G .* f
 		)
 		# Make sure that the interpolated Gf is not larger than 1.
 		# Can happen with e.g. quadratic interpolation despite us having checked that
 		# G .* f .< 1.0 holds.
-		Gf = if interpolation_order > 1
+		Gf = if interpolate.order > 1
 			RMpc -> let
 				value = Gf_unchecked(RMpc)
 				@assert value < 1.0 "interpolated G*f must be < 1. Problem are typically too large fluctuations."
@@ -629,7 +737,7 @@ begin
 			Gf_unchecked
 		end
 
-		IR∞ = calculate_I_R∞(extrapolate; RMpc=RMpc, Gf=Gf)
+		IR∞ = calculate_I_R∞(extrapolate, interpolate; RMpc=RMpc, Gf=Gf)
 		ΔΣ(RMpc) = (1/f)*(Gf(RMpc)/(1 - Gf(RMpc)))*exp(-IR∞(RMpc))
 
 		calculate_gobs_from_ΔΣ(extrapolate; ΔΣ=ΔΣ, RMpc=RMpc, f∞=f, Gf=Gf)
@@ -642,9 +750,9 @@ function calculate_gobs_and_covariance_in_bins(;
 		f,
 		R::typeof([1.0*u"Mpc"]),
 		G_covariance::typeof([1.0 1.0] .* u"(Msun/pc^2)^2"),
-		interpolation_order=1,
+		interpolate::I,
 		extrapolate::E
-	) where E<:AbstractExtrapolate
+	) where {E<:AbstractExtrapolate,I<:AbstractInterpolate}
 
 	RMpc = R ./ u"Mpc" .|> NoUnits
 
@@ -652,14 +760,14 @@ function calculate_gobs_and_covariance_in_bins(;
 		G=G_no_units .* u"Msun/pc^2",
 		f=f,
 		R=R,
-		interpolation_order=interpolation_order,
+		interpolate=interpolate,
 		extrapolate=extrapolate
 	)
 	__get_gobs(f::typeof(1.0/u"Msun/pc^2"); G_no_units) = calculate_gobs_fconst(;
 		G=G_no_units .* u"Msun/pc^2",
 		f=f,
 		R=R,
-		interpolation_order=interpolation_order,
+		interpolate=interpolate,
 		extrapolate=extrapolate
 	)
 
@@ -708,17 +816,35 @@ when f is constant
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=.9 ./ u"Msun/pc^2",
-		extrapolate=ExtrapolatePowerDecay(1)
+		extrapolate=ExtrapolatePowerDecay(1),
+		interpolate=InterpolateR(1),
 	)
-	plot(RMpc -> gobs1overR(RMpc), .2, 1.3, label="Extrapolate 1/R")
+	gobs1overRinterpLnR = calculate_gobs_fconst(
+		R=[.2, .5, .7] .* u"Mpc",
+		G=[.3, .2, .1] .* u"Msun/pc^2",
+		f=.9 ./ u"Msun/pc^2",
+		extrapolate=ExtrapolatePowerDecay(1),
+		interpolate=InterpolateLnR(1),
+	)
+	plot(RMpc -> gobs1overR(RMpc), .2, 1.3, label="Extrapolate 1/R, interpolateR(1)")
+	plot!(RMpc -> gobs1overRinterpLnR(RMpc), .2, 1.3, label="Extrapolate 1/R, interpolateLnR(1)")
 
 	gobs1overR = calculate_gobs_fgeneral(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=[.9, .9, .9] ./ u"Msun/pc^2",
-		extrapolate=ExtrapolatePowerDecay(1)
+		extrapolate=ExtrapolatePowerDecay(1),
+		interpolate=InterpolateR(1),
 	)
-	plot!(RMpc -> gobs1overR(RMpc), .2, 1.3, label="(general) Extrapolate 1/R", ls=:dash)
+	gobs1overRinterpLnR = calculate_gobs_fgeneral(
+		R=[.2, .5, .7] .* u"Mpc",
+		G=[.3, .2, .1] .* u"Msun/pc^2",
+		f=[.9, .9, .9] ./ u"Msun/pc^2",
+		extrapolate=ExtrapolatePowerDecay(1),
+		interpolate=InterpolateLnR(1),
+	)
+	plot!(RMpc -> gobs1overR(RMpc), .2, 1.3, label="(general) Extrapolate 1/R, interpolateR(1)", ls=:dash)
+	plot!(RMpc -> gobs1overRinterpLnR(RMpc), .2, 1.3, label="(general) Extrapolate 1/R, interpolateLnR(1)", ls=:dash)
 end
 
 # ╔═╡ 2dbc3c0b-8050-448b-b836-aafc21a7f189
@@ -742,7 +868,7 @@ Because in this limit $\Delta \Sigma$ is just $G$ and $f$ drops out and we can a
 		@info "Testing with" nameof(typeof(f)) nameof(typeof(extrapolate))
 		new = calculate_gobs_and_covariance_in_bins(
 			R=R, f=f, G=G, G_covariance=G_covariance,
-			interpolation_order=1,
+			interpolate=InterpolateR(1),
 			extrapolate=extrapolate,
 		)
 	
@@ -821,7 +947,7 @@ We're asssuming 10% fake errors on $G$ measurements, just so we can test the err
 
 # ╔═╡ da111d64-a4f5-4637-986c-3b26027c058b
 @plutoonly function test_reconstruction_SIS_quartic_fall_off(;
-		logRMpc_bin_width, interpolation_order=1
+		logRMpc_bin_width, interpolate=InterpolateR(1)
 )
 	# Test: Do we actually recontruct the correct gobs?
 
@@ -869,7 +995,7 @@ We're asssuming 10% fake errors on $G$ measurements, just so we can test the err
 			G_covariance=diagm(σ_G.(Rbins) .^ 2),
 			f=f.(Rbins),
 			extrapolate=ExtrapolatePowerDecay(n),
-			interpolation_order=interpolation_order
+			interpolate=interpolate,
 		)
 		plot!(p,
 			Rbins ./ u"Mpc",
@@ -903,11 +1029,14 @@ md"""
 
 # ╔═╡ d06064c8-5bc9-4e29-ba21-62925fca0104
 md"""
-## ... better with quadratic interpolation
+## ... better with quadratic interpolation or interpolation in $\ln(R)$ space
 """
 
 # ╔═╡ f5b99cdf-daf7-4419-9259-57f07b3d9fdf
-@plutoonly test_reconstruction_SIS_quartic_fall_off(logRMpc_bin_width=.1, interpolation_order=2)
+@plutoonly test_reconstruction_SIS_quartic_fall_off(logRMpc_bin_width=.1, interpolate=InterpolateR(2))
+
+# ╔═╡ 11c0a007-08a4-446b-81ff-961ab62b9051
+@plutoonly test_reconstruction_SIS_quartic_fall_off(logRMpc_bin_width=.1, interpolate=InterpolateLnR(1))
 
 # ╔═╡ 9dcd6d67-90f6-4cd2-843c-02b3f6d196cd
 md"""
@@ -917,7 +1046,7 @@ md"""
 """
 
 # ╔═╡ cda4a385-3c68-430d-8e86-abd54374dffa
-@plutoonly function test_reconstruction_SIS(; logRMpc_bin_width, interpolation_order=1)
+@plutoonly function test_reconstruction_SIS(; logRMpc_bin_width, interpolate)
 	# Test: Do we actually recontruct the correct gobs?
 
 	# See `check-ESD-to-RAR-for-explicit-examples.nb` in `lensing-RAR/`for analytic 
@@ -961,7 +1090,7 @@ md"""
 			G=G.(Rbins),
 			f=f.(Rbins),
 			extrapolate=ExtrapolatePowerDecay(n),
-			interpolation_order=interpolation_order
+			interpolate=interpolate
 		)
 		plot!(p,
 			Rbins ./ u"Mpc",
@@ -981,7 +1110,7 @@ md"""
 end
 
 # ╔═╡ dd9afde0-ea99-41c5-8b86-da1c91a09fc4
-@plutoonly test_reconstruction_SIS(logRMpc_bin_width=.12, interpolation_order=2)
+@plutoonly test_reconstruction_SIS(logRMpc_bin_width=.12, interpolate=InterpolateR(2))
 
 # ╔═╡ Cell order:
 # ╠═8f04c59b-a109-4032-9235-1acc6f8ad9b4
@@ -1011,6 +1140,7 @@ end
 # ╠═3da7711f-7335-4498-891b-fe6ac1e81d7c
 # ╟─d06064c8-5bc9-4e29-ba21-62925fca0104
 # ╠═f5b99cdf-daf7-4419-9259-57f07b3d9fdf
+# ╠═11c0a007-08a4-446b-81ff-961ab62b9051
 # ╟─9dcd6d67-90f6-4cd2-843c-02b3f6d196cd
 # ╠═dd9afde0-ea99-41c5-8b86-da1c91a09fc4
 # ╠═cda4a385-3c68-430d-8e86-abd54374dffa
