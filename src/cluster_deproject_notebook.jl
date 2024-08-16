@@ -289,7 +289,7 @@ end
 
 # ╔═╡ 9269044a-217b-48ef-b6f1-266a75890956
 begin
-	# How to extrapolate G, Gf, f beyond last data point
+	# How to extrapolate G beyond last data point
 	abstract type AbstractExtrapolate end
 	struct ExtrapolatePowerDecay <: AbstractExtrapolate
 		# Only positive values are allowed!
@@ -297,7 +297,7 @@ begin
 	end
 
 	# Hot to interpolate G, Gf, f, in between the discrete data points
-	# NB: This also controls whether the integral I(R) and J(R) are calculated from
+	# NB: This also controls whether the integrals I(R) and J(R) are calculated from
 	#     ODEs of the form dI/dR = ... (for linear-spce) or from ODEs of the form 
 	#     dI/d ln R = ... (for log-space)
 	abstract type AbstractInterpolate end
