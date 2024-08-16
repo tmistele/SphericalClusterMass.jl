@@ -40,9 +40,11 @@ result = calculate_gobs_and_covariance_in_bins(
     # Extrapolate beyond last data point assuming G ~ 1/R.
     # Corresponds to a singular isothermal sphere.
     extrapolate=ExtrapolatePowerDecay(1),
-    # Interpolate linearly between discrete data points.
-    # Quadratic interpolation is also a good choice, but a bit slower.
-    interpolation_order=1,
+    # Interpolate linearly between discrete data points in "R-space".
+    # - Quadratic interpolation is also a good choice, but a bit slower.
+    # - To interpolate in "ln(R)-space", use `InterpolateLnR(..)`.
+    #   This may be the better choice for logarithmic bins.
+    interpolate=InterpolateR(1),
 )
 ```
 
@@ -73,7 +75,7 @@ result = calculate_gobs_and_covariance_in_bins(
     f=1e-3 * .9 / u"Msun/pc^2", # <-- This is now a scalar instead of a vector
     G_covariance=diagm((1e2 .* [.3, .2, .1] .* u"Msun/pc^2") .^ 2),
     extrapolate=ExtrapolatePowerDecay(1),
-    interpolation_order=1,
+    interpolate=InterpolateR(1),
 )
 ```
 
@@ -87,7 +89,7 @@ result = calculate_gobs_fgeneral(
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
     f=1e-3 .* [.9, .9, .9] ./ u"Msun/pc^2",
     extrapolate=ExtrapolatePowerDecay(1),
-    interpolation_order=1,
+    interpolate=InterpolateR(1),
 ).(R ./ u"Mpc")
 ```
 
@@ -100,6 +102,6 @@ result = calculate_gobs_fconst(
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
     f=1e-3 * .9 / u"Msun/pc^2", # <-- This is now a scalar instead of a vector
     extrapolate=ExtrapolatePowerDecay(1),
-    interpolation_order=1,
+    interpolate=InterpolateR(1),
 ).(R ./ u"Mpc")
 ```
