@@ -40,34 +40,10 @@ module old_gobs_from_ΔΣ
 
 	abstract type AbstractExtrapolateΔΣ end
 	struct ExtrapolateΔΣSIS <: AbstractExtrapolateΔΣ end
-	struct ExtrapolateΔΣZero <: AbstractExtrapolateΔΣ end
-	struct ExtrapolateΔΣFlat <: AbstractExtrapolateΔΣ end
 
 	gobs_analytical_tail_factor(ex::ExtrapolateΔΣSIS;
 			RoverRmax, RMpcMax, last_RMpc_bin_edge) = let
 		(1/RoverRmax)*(1 - sqrt(1-RoverRmax^2))
-	end
-	gobs_analytical_tail_factor(ex::ExtrapolateΔΣZero;
-			RoverRmax, RMpcMax, last_RMpc_bin_edge) = let
-
-		# In practice: last data point = last bin *center*
-		# We assume zero after last bin *edge* (not already at last bin center!)
-		
-		R0Mpc = last_RMpc_bin_edge # From where on we set ΔΣ̂ to zero
-		ΔRzeroMpc = R0Mpc - RMpcMax # How much after Rmax we start with zero
-		RoverΔ = RoverRmax * RMpcMax / ΔRzeroMpc
-		RoverR0 = RoverRmax * RMpcMax / R0Mpc
-		θmin = asin(RoverRmax)
-		θmin0 = asin(RoverR0)
-		
-		(
-			(R0Mpc/ΔRzeroMpc) * (θmin - θmin0) +
-			RoverΔ * log(cot(.5*θmin)/cot(.5*θmin0))
-		)
-	end
-	gobs_analytical_tail_factor(ex::ExtrapolateΔΣFlat;
-			RoverRmax, RMpcMax, last_RMpc_bin_edge) = let
-		asin(RoverRmax)
 	end
 
 	function calculate_gobs(; R, ΔΣ̂, last_RMpc_bin_edge,
@@ -318,10 +294,6 @@ begin
 		# Only positive values are allowed!
 		n::Float64
 	end
-	struct ExtrapolateFlat <: AbstractExtrapolate end
-	struct ExtrapolateZero <: AbstractExtrapolate
-		last_RMpc_bin_edge::Float64
-	end
 end
 
 # ╔═╡ 52cadcf0-a9ae-4e91-ac44-21e6fd25dabc
@@ -358,13 +330,6 @@ Boundary condition:
   For later:
 
   $I(R \geq R_{\mathrm{max}}) = -\frac{2}{n} \ln\left(1 - Gf(R_{\mathrm{max}}) \left(\frac{R_{\mathrm{max}}}{R}\right)^n\right)$
-
-- Extrapolate zero (care: zero only after last bin edge, not after last bin center!)
-
-  $I(R_{\mathrm{last\;bin\;edge}}) = 0$
-- Extrapolate flat: Oups. Flat is not possible it seems. It *must* decay!
-
-  $I(R_{\mathrm{max}}) = \frac{Gf(R_{\mathrm{max}})}{1 - Gf(R_{\mathrm{max}})}\int_{R_{\mathrm{max}}}^\infty dR' \frac{2}{R'} = \infty$
 """
 
 # ╔═╡ 3e5aa347-e19e-4107-a85e-30aa2515fb3a
@@ -390,29 +355,6 @@ begin
 			s(RMpcMax - RMpc, idxs=1)
 		end
 	end
-	
-	function calculate_I_R∞(extrapolate::ExtrapolateZero; RMpc, Gf)
-		# Solve in terms of X = RMpcLastBinEdge - R so we can impose
-		# I(RMpcLastBinEdge) = 0 as an *initial* condition (rather than a final
-		# condition). Because that's what `ODEProblem` wants
-		RMpcLastBinEdge = extrapolate.last_RMpc_bin_edge
-		RMpcMin = minimum(RMpc)
-		prob = ODEProblem(
-			(I, p, X) -> let
-				RMpc = RMpcLastBinEdge - X
-				SA[(2/RMpc)*Gf(RMpc)/(1 - Gf(RMpc))] # RHS of I'(X) = ...
-			end,
-			# The `eltype` dance is for ForwardDiff, so SA[..] has the correct type
-			# (i.e. `Float64` when running normally and `Dual...` when auto-diffing)
-			SA[eltype(Gf(RMpcMin))(0.0)], # Initial condition
-			(0, RMpcLastBinEdge-RMpcMin) # R interval where to solve
-		)
-		s = solve(prob, Tsit5())
-		RMpc -> let
-			@assert RMpc <= RMpcLastBinEdge "I(R) only calculated up to last bin edge!"
-			s(RMpcLastBinEdge - RMpc, idxs=1)
-		end
-	end
 end
 
 # ╔═╡ c8046b24-dfe7-4bf2-8787-b33d855e586f
@@ -431,10 +373,6 @@ For ..
 - extrapolate $1/R^n$ (see Mathematica):
 
   $J(R_{\mathrm{max}}) = \frac{1}{f_\infty} \left((1 - Gf(R_{\mathrm{max}}))^{-\frac2n} - 1\right)$
-
-- extrapolate Zero (note: zero only after last bin edge, not last bin center!):
-
-  $J(R_{\mathrm{last\;bin\;egde}}) = 0$
 """
 
 # ╔═╡ 64e5f173-11be-4dbf-b9ab-f652c50d9c09
@@ -461,30 +399,6 @@ begin
 		RMpc -> let
 			@assert RMpc <= RMpcMax "J(R) only calculated up to last bin center!"
 			s(RMpcMax - RMpc, idxs=1)
-		end
-	end
-
-	function calculate_J_R∞(extrapolate::ExtrapolateZero; RMpc::typeof([1.0]), Gf, Ĝ, I)
-		# Solve in terms of X = RMpcLastBinEdge - R so we can impose J(RMax) = 0 as
-		# an *initial* condition (rather than a final condition). Because that's what
-		# `ODEProblem` wants
-		RMpcLastBinEdge = extrapolate.last_RMpc_bin_edge
-		RMpcMin = minimum(RMpc)
-		prob = ODEProblem(
-			(J, p, X) -> let
-				RMpc = RMpcLastBinEdge - X
-				# RHS of I'(X) = ...
-				SA[(2/RMpc)*(1/exp(-I(RMpc)))*Ĝ(RMpc)/(1 - Gf(RMpc))]
-			end,
-			# The `eltype` dance is for ForwardDiff, so SA[..] has the correct type
-			# (i.e. `Float64` when running normally and `Dual...` when auto-diffing)
-			SA[eltype(Gf(RMpcMin))(0.0)], # Initial condition
-			(0, RMpcLastBinEdge-RMpcMin) # R interval where to solve
-		)
-		s = solve(prob, Tsit5())
-		RMpc -> let
-			@assert RMpc <= RMpcLastBinEdge "J(R) only calculated up to last bin edge!"
-			s(RMpcLastBinEdge - RMpc, idxs=1)
 		end
 	end
 end
@@ -516,8 +430,8 @@ begin
 			func(RMpc)
 		end
 	end
-	function get_interpolation_RMpc(
-		extrapolate::ExtrapolateFlat; interpolation_order::Int64,
+	function get_interpolation_RMpc_flat(;
+		interpolation_order::Int64,
 		RMpc::typeof([1.0]), values
 	)
 		BSplineKit.extrapolate(
@@ -526,38 +440,8 @@ begin
 				# Linear interpolation = BSplineOrder(2), so +1
 				BSplineKit.BSplineOrder(interpolation_order+1)
 			),
-			# Just b/c of floating point inexactness. We don't actually need values 
-			# outside where they're defined
 			BSplineKit.Flat()
 		)
-	end
-	function get_interpolation_RMpc(
-		extrapolate::ExtrapolateZero; interpolation_order::Int64,
-		RMpc::typeof([1.0]), values
-	)
-		func = BSplineKit.interpolate(
-			RMpc, values,
-			# Linear interpolation = BSplineOrder(2), so +1
-			BSplineKit.BSplineOrder(interpolation_order+1)
-		)
-		maxRMpc = maximum(RMpc)
-		lastBinEdgeRMpc = extrapolate.last_RMpc_bin_edge
-		boundaryVal = func(maxRMpc)
-
-		# eltype dance for ForwardDiff, type cannot be fixed Float64, must allow for
-		# Dual numbers as values.
-		zero = eltype(values)(0.0)
-		RMpc -> if RMpc > maxRMpc
-			# Zero beyond last bin edge (not last bin center!)
-			# Between last bin center and last bin edge, interpolate linearly to zero.
-			if RMpc > lastBinEdgeRMpc
-				zero
-			else
-				boundaryVal * (RMpc - lastBinEdgeRMpc) / (maxRMpc - lastBinEdgeRMpc)
-			end
-		else
-			func(RMpc)
-		end
 	end
 end
 
@@ -599,58 +483,37 @@ So we can use the simpler $f = \mathrm{const}$ formulas to calculate the $g_{\ma
   \end{aligned}$
 
   For other $n$: Just do it numerically, works quite well (see comments in code below) :)
-
-- For extrapolate zero, it should just be (note the tail now starts beyond last bin _egde_, not last bin _center_!)
-
-  $g_{\mathrm{obs}}^{\mathrm{tail}}(R > R_{\mathrm{last\;bin\;edge}}) = 0$
 """
 
 # ╔═╡ c86ab391-86c3-44f8-b0b9-20fb70c4dc87
-begin
-	function get_gobs_RMpctail(extrapolate::ExtrapolatePowerDecay, RMpc)
-		# For 1/R extrapolation, the tail starts at last bin center. Normal.
-		maximum(RMpc)
-	end
-	function calculate_gobs_tail(
-		extrapolate::ExtrapolatePowerDecay; θlim, f∞, GfTail, RMpc, RMpcTail
-	)
-		n = extrapolate.n
-		RMpcMax = RMpcTail
-		Gfmax = GfTail
+function calculate_gobs_tail(
+	extrapolate::ExtrapolatePowerDecay; θlim, f∞, GfTail, RMpc, RMpcTail
+)
+	n = extrapolate.n
+	RMpcMax = RMpcTail
+	Gfmax = GfTail
 
-		if n == 1
-			(4*u"G"/f∞)*Gfmax*(RMpcMax/RMpc)*(
-				1
-				- (1/2)*Gfmax*(RMpcMax/RMpc)*θlim
-				- cos(θlim)
-				+ (1/2)*Gfmax*(RMpcMax/RMpc)*cos(θlim)*sin(θlim)
-			) |> u"m/s^2"
-		elseif n == 2
-			(4*u"G"/f∞)*(1/2)*Gfmax*(RMpcMax/RMpc)^2*(
-				θlim - cos(θlim)*sin(θlim)
-			) |> u"m/s^2"
-		else
-			# We could use that integral for the other n as well. It works well.
-			# But I've implemented them already and they're faster of course, so
-			# let's keep them for now.
-			ΔΣtail(RMpc) = (1/f∞)*Gfmax*(RMpcMax/RMpc)^n*(1 - Gfmax*(RMpcMax/RMpc)^n)^(2/n-1)
+	if n == 1
+		(4*u"G"/f∞)*Gfmax*(RMpcMax/RMpc)*(
+			1
+			- (1/2)*Gfmax*(RMpcMax/RMpc)*θlim
+			- cos(θlim)
+			+ (1/2)*Gfmax*(RMpcMax/RMpc)*cos(θlim)*sin(θlim)
+		) |> u"m/s^2"
+	elseif n == 2
+		(4*u"G"/f∞)*(1/2)*Gfmax*(RMpcMax/RMpc)^2*(
+			θlim - cos(θlim)*sin(θlim)
+		) |> u"m/s^2"
+	else
+		# We could use that integral for the other n as well. It works well.
+		# But I've implemented them already and they're faster of course, so
+		# let's keep them for now.
+		ΔΣtail(RMpc) = (1/f∞)*Gfmax*(RMpcMax/RMpc)^n*(1 - Gfmax*(RMpcMax/RMpc)^n)^(2/n-1)
 
-			quadgk_result = 4*u"G*Msun/pc^2"*quadgk(
-				θ -> ΔΣtail(RMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
-				0, θlim
-			)[1] |> u"m/s^2"
-		end
-	end
-	function get_gobs_RMpctail(extrapolate::ExtrapolateZero, RMpc)
-		# For zero extrapolation we let the tail start at the last bin edge
-		# Then we have gobs = 0 in that tail. The interpolation between last bin
-		# center (!) and last bin edge we can let the numerics do.
-		extrapolate.last_RMpc_bin_edge
-	end
-	function calculate_gobs_tail(
-		extrapolate::ExtrapolateZero; θlim, f∞, GfTail, RMpc, RMpcTail
-	)
-		0.0u"m/s^2"
+		quadgk_result = 4*u"G*Msun/pc^2"*quadgk(
+			θ -> ΔΣtail(RMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
+			0, θlim
+		)[1] |> u"m/s^2"
 	end
 end
 
@@ -664,9 +527,7 @@ function calculate_gobs_from_ΔΣ(
 	# only up to R=Rmax (and the `ODESolution` extrapolation beyond last data point
 	# is often completely off).
 
-	# Careful: The "tail" starts sometimes at last bin center and sometimes at last
-	# bin edge. Depending on the extrapolation method.
-	RMpcTail = get_gobs_RMpctail(extrapolate, RMpc)
+	RMpcTail = maximum(RMpc)
 	GfTail = Gf(RMpcTail)
 	
 	gobs(RMpc) = if RMpc < RMpcTail
@@ -711,8 +572,8 @@ begin
 			extrapolate; interpolation_order=interpolation_order,
 			RMpc=RMpc, values=G ./ u"Msun/pc^2"
 		)
-		f̂ = get_interpolation_RMpc(
-			ExtrapolateFlat(); interpolation_order=interpolation_order,
+		f̂ = get_interpolation_RMpc_flat(
+			interpolation_order=interpolation_order,
 			RMpc=RMpc, values=f .* u"Msun/pc^2"
 		)
 		# Make sure that the interpolated Gf is not larger than 1.
@@ -849,14 +710,7 @@ when f is constant
 		f=.9 ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1)
 	)
-	gobsZero = calculate_gobs_fconst(
-		R=[.2, .5, .7] .* u"Mpc",
-		G=[.3, .2, .1] .* u"Msun/pc^2",
-		f=.9 ./ u"Msun/pc^2",
-		extrapolate=ExtrapolateZero(.9)
-	)
 	plot(RMpc -> gobs1overR(RMpc), .2, 1.3, label="Extrapolate 1/R")
-	plot!(RMpc -> gobsZero(RMpc), .2, 1.3, label="Extrapolate Zero")
 
 	gobs1overR = calculate_gobs_fgeneral(
 		R=[.2, .5, .7] .* u"Mpc",
@@ -864,14 +718,7 @@ when f is constant
 		f=[.9, .9, .9] ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1)
 	)
-	gobsZero = calculate_gobs_fgeneral(
-		R=[.2, .5, .7] .* u"Mpc",
-		G=[.3, .2, .1] .* u"Msun/pc^2",
-		f=[.9, .9, .9] ./ u"Msun/pc^2",
-		extrapolate=ExtrapolateZero(.9)
-	)
 	plot!(RMpc -> gobs1overR(RMpc), .2, 1.3, label="(general) Extrapolate 1/R", ls=:dash)
-	plot!(RMpc -> gobsZero(RMpc), .2, 1.3, label="(general) Extrapolate Zero", ls=:dash)
 end
 
 # ╔═╡ 2dbc3c0b-8050-448b-b836-aafc21a7f189
@@ -958,20 +805,6 @@ Because in this limit $\Delta \Sigma$ is just $G$ and $f$ drops out and we can a
 		extrapolate_old=old_gobs_from_ΔΣ.ExtrapolateΔΣSIS(),
 	)
 
-	# Same tests but with ExtrapolateZero
-	do_test(
-		f = .1e-6 .* [.9, 1.5, 1.9, .9] ./ u"Msun/pc^2",
-		extrapolate=ExtrapolateZero(1.0),
-		extrapolate_old=old_gobs_from_ΔΣ.ExtrapolateΔΣZero(),
-		allowed_difference_factor=20
-	)
-	do_test(
-		f = .1e-6 .* .9 ./ u"Msun/pc^2",
-		extrapolate=ExtrapolateZero(1.0),
-		extrapolate_old=old_gobs_from_ΔΣ.ExtrapolateΔΣZero(),
-		allowed_difference_factor=30
-	)
-
 	@info "all good :)"
 end
 
@@ -1029,7 +862,7 @@ We're asssuming 10% fake errors on $G$ measurements, just so we can test the err
 		xlabel="R in Mpc",
 		ylabel="gobs reconstructed / gobs real",
 	)
-	for n in [1/2, 1, 2]
+	for n in [1/2, 1, 2, 4]
 		gobs_reconstructed = calculate_gobs_and_covariance_in_bins(
 			R=Rbins,
 			G=G.(Rbins),
@@ -1050,30 +883,6 @@ We're asssuming 10% fake errors on $G$ measurements, just so we can test the err
 			gobs_reconstructed.gobs ./ gobs_real.(Rbins),
 			yerror=gobs_reconstructed.gobs_stat_err ./ gobs_real.(Rbins),
 			label="1/R^$(n) extrapolate",
-			marker=:diamond,
-		)
-	end
-	let
-		gobs_reconstructed = calculate_gobs_and_covariance_in_bins(
-			R=Rbins,
-			G=G.(Rbins),
-			G_covariance=diagm(σ_G.(Rbins) .^ 2),
-			f=f.(Rbins),
-			extrapolate=ExtrapolateZero(last_RMpc_bin_edge),
-			interpolation_order=interpolation_order
-		)
-		plot!(p,
-			Rbins ./ u"Mpc",
-			gobs_reconstructed.gobs .* (Rbins ./ u"Mpc") .^ 2,
-			yerror=gobs_reconstructed.gobs_stat_err .* (Rbins ./ u"Mpc") .^ 2,
-			label="gobs reconstructed * R^2, zero extrapolate",
-			marker=:diamond,
-		)
-		plot!(p_gobs_ratio,
-			Rbins ./ u"Mpc",
-			gobs_reconstructed.gobs  ./ gobs_real.(Rbins),
-			yerror=gobs_reconstructed.gobs_stat_err ./ gobs_real.(Rbins),
-			label="zero extrapolate",
 			marker=:diamond,
 		)
 	end
@@ -1146,7 +955,7 @@ md"""
 		xlabel="R in Mpc",
 		ylabel="gobs reconstructed / gobs real",
 	)
-	for n in [1/2, 1, 2]
+	for n in [1/2, 1, 2, 4]
 		gobs_reconstructed = calculate_gobs_fgeneral(
 			R=Rbins,
 			G=G.(Rbins),
@@ -1164,27 +973,6 @@ md"""
 			Rbins ./ u"Mpc",
 			gobs_reconstructed.(Rbins ./ u"Mpc")  ./ gobs_real.(Rbins),
 			label="1/R^$(n) extrapolate",
-			marker=:diamond,
-		)
-	end
-	let
-		gobs_reconstructed = calculate_gobs_fgeneral(
-			R=Rbins,
-			G=G.(Rbins),
-			f=f.(Rbins),
-			extrapolate=ExtrapolateZero(last_RMpc_bin_edge),
-			interpolation_order=interpolation_order
-		)
-		plot!(p,
-			Rbins ./ u"Mpc",
-			gobs_reconstructed.(Rbins ./ u"Mpc") .* (Rbins ./ u"Mpc") .^ 2,
-			label="gobs reconstructed * R^2, zero extrapolate",
-			marker=:diamond,
-		)
-		plot!(p_gobs_ratio,
-			Rbins ./ u"Mpc",
-			gobs_reconstructed.(Rbins ./ u"Mpc")  ./ gobs_real.(Rbins),
-			label="zero extrapolate",
 			marker=:diamond,
 		)
 	end
