@@ -24,7 +24,8 @@ using UnitfulAstro
 using LinearAlgebra
 ```
 
-Then you can get the deprojected mass given the azimuthally averaged tangential reduced shear $G_+ = \langle g_+ \Sigma_{\mathrm{crit}} \rangle$ and azimuthally averaged inverse critical surface density $f_c = \langle \Sigma_{\mathrm{crit}}^{-1} \rangle$.
+Then you can get the deprojected mass from the azimuthally averaged tangential reduced shear $G_+ = \langle g_+ \Sigma_{\mathrm{crit}} \rangle$ and the azimuthally averaged inverse critical surface density $f_c = \langle \Sigma_{\mathrm{crit}}^{-1} \rangle$
+(alternatively, if individual source redshifts are not available, you can use $G_+ = \langle g_+ \rangle / \langle \Sigma_{\mathrm{crit}}^{-1} \rangle$ and $f_c = \langle \Sigma_{\mathrm{crit}}^{-2} \rangle / \langle \Sigma_{\mathrm{crit}}^{-1} \rangle$).
 The following code calculates (a form of) the deprojected mass profile and the associated covariance matrix,
 
 ```julia
@@ -50,7 +51,7 @@ result = calculate_gobs_and_covariance_in_bins(
 
 This will run for a few seconds on the first run to compile the code.
 Subsequent runs will be fast, unless the number of data points changes, which requires recompilation.
-`result` is a named tuple with fields `gobs`, `gobs_stat_cov` and `gobs_stat_err` where `gobs` refers to the acceleration $G M/r^2$.
+`result` is a named tuple with fields `gobs`, `gobs_stat_cov` and `gobs_stat_err` where `gobs` refers to the acceleration $G M(r) /r^2$.
 The deprojected mass $M$ and its statistical uncertainties and covariance matrix can be inferred from this.
 For example,
 
