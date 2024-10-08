@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.19.46
+# v0.20.0
 
 using Markdown
 using InteractiveUtils
@@ -277,6 +277,108 @@ module old_gobs_from_ΔΣ
 	end
 end
 
+# ╔═╡ 3f004698-b952-462f-8824-5c78ab1e08ad
+module __demo
+	using Unitful
+	using UnitfulAstro
+
+	# This is copied from the demo code I wrote for the paper.
+	# Perhaps put the demo code properly into a sub-module or so here.
+	abstract type AbstractProfile end
+	function calculate_γ12(p::P, x, y; Σcrit) where P<:AbstractProfile
+		R = sqrt( (x-p.x0)^2 + (y-p.y0)^2 )
+		dϕ = calculate_dR_lenspot(p, R; Σcrit=Σcrit)
+		ddϕ = calculate_ddR_lenspot(p, R; Σcrit=Σcrit)
+		tmp = (R*ddϕ - dϕ)/R^3
+		
+		γ1 = .5 * ( (x-p.x0)^2 - (y-p.y0)^2 ) * tmp
+		γ2 = (x-p.x0)*(y-p.y0) * tmp
+		(γ1, γ2) .|> NoUnits
+	end
+	function calculate_γtx(p, x, y; Σcrit)
+		(γ1, γ2) = calculate_γ12(p, x, y; Σcrit=Σcrit)
+	
+		R = sqrt(x^2 + y^2)
+		cosφ = x/R
+		sinφ = y/R
+	
+		# Angle sum identities (or use Mathematica, Cos[2φ]//TrigReduce)
+		cos2φ = cosφ^2 - sinφ^2
+		sin2φ = 2*cosφ*sinφ
+	
+		γt = - cos2φ * γ1 - sin2φ * γ2
+		γx =   sin2φ * γ1 - cos2φ * γ2
+	
+		(γt, γx)
+	end
+	function calculate_κ(p::P, x, y; Σcrit) where P <:AbstractProfile
+		R = sqrt( (x-p.x0)^2 + (y-p.y0)^2 )
+		calculate_κ(p, R; Σcrit=Σcrit)
+	end
+	function calculate_azimuthally_averaged_gt(R, p; Σcritinv)
+		
+		Σcrit = 1/Σcritinv
+		
+		# 50 samples
+		# `end-1` to make sure 2π is not included (do not double-count φ = 0 = 2π)
+		# TODO: Make that depend on radius?? (constant source number density!)
+		φvals = LinRange(0, 2π, 50+1)[1:end-1] |> collect
+	
+		xvals = R .* cos.(φvals)
+		yvals = R .* sin.(φvals)
+	
+		# Get the (dimensionless) γ and κ
+		γtx = calculate_γtx.(Ref(p), xvals, yvals; Σcrit=Σcrit)
+		γt = map(x -> x[1], γtx)
+		γx = map(x -> x[2], γtx)
+		
+		κ = calculate_κ.(Ref(p), xvals, yvals; Σcrit=Σcrit)
+	
+		# Don't shoot ourselves in the foot
+		@assert all(κ .< .9) "Oups -- don't let κ be so big :) $(R) $(κ)"
+	
+		# Reduced shear
+		gt = γt ./ (1 .- κ)
+		gx = γx ./ (1 .- κ)
+	
+		# Azimuthal average
+		gt = sum(gt) / length(gt)
+		gx = sum(gx) / length(gx)
+	
+		@assert abs(gx) < 1e-15 "Cross-check: γx and gx should be zero"
+	
+		# Reduced tangential shear
+		gt
+	end
+	struct ProfileSIS <: AbstractProfile
+		M1Mpc::typeof(1.0u"Msun")
+		x0::typeof(1.0u"Mpc")
+		y0::typeof(1.0u"Mpc")
+	end
+	ProfileSIS(; M1Mpc, x0, y0) = ProfileSIS(
+		M1Mpc,
+		x0,
+		y0
+	)
+	function calculate_κ(p::ProfileSIS, R; Σcrit)
+		# ρ = M1Mpc/(4π*1Mpc*r^2)
+		# NB: κ= Σ/Σcrit -- but lens equations have factor of 2: Δ ϕ = 2 κ
+		a = p.M1Mpc/(4π*1u"Mpc") / Σcrit
+		a*π/R |> NoUnits
+	end
+	function calculate_dR_lenspot(p::ProfileSIS, R; Σcrit)
+		# ρ = M1Mpc/(4π*1Mpc*r^2)
+		a = p.M1Mpc/(4π*1u"Mpc")
+		
+		2π * a/Σcrit
+	end
+	function calculate_ddR_lenspot(p::ProfileSIS, R; Σcrit)
+		# ρ = M1Mpc/(4π*1Mpc*r^2)
+		prefactor = p.M1Mpc/(4π*1u"Mpc")/Σcrit
+		0*prefactor/1u"Mpc"
+	end
+end
+
 # ╔═╡ 8f04c59b-a109-4032-9235-1acc6f8ad9b4
 # We use this notebook both as a library for other code
 # and a pluto notebook to have nice visual tests directly next to the code
@@ -285,6 +387,12 @@ macro plutoonly(block)
 	if @isdefined PlutoRunner
 		:($(esc(block)))
 	end
+end
+
+# ╔═╡ 2bd8f9c4-ed93-406f-974e-3539d44f21c4
+@plutoonly let
+	import PlutoUI
+	PlutoUI.TableOfContents()
 end
 
 # ╔═╡ 9269044a-217b-48ef-b6f1-266a75890956
@@ -307,6 +415,22 @@ begin
 	struct InterpolateLnR <: AbstractInterpolate
 		order::UInt8
 	end
+
+	# If and how to correct for miscentering
+	abstract type AbstractMiscenterCorrect end
+	# No correction
+	struct MiscenterCorrectNone <: AbstractMiscenterCorrect end
+	# Correct up to (including) O((Rmc/R)^2)
+	# (but not including O(κ (Rmc/R)^2))
+	struct MiscenterCorrectSmallRmc <: AbstractMiscenterCorrect
+		Rmc²::typeof(1.0u"Mpc^2")
+		# Note: That's the uncertainty on (Rmc^2)
+		σ_Rmc²::typeof(1.0u"Mpc^2")
+	end
+	MiscenterCorrectSmallRmc(; Rmc², σ_Rmc²) = MiscenterCorrectSmallRmc(
+		Rmc²,
+		σ_Rmc²
+	)
 end
 
 # ╔═╡ 52cadcf0-a9ae-4e91-ac44-21e6fd25dabc
@@ -324,6 +448,138 @@ $f \equiv \langle\Sigma_{\mathrm{cr}}^{-1} \rangle$
 where $\langle \dots \rangle$ denotes source average over all sources at sam projected distance $R$ (azimuthal average).
 
 This is for a *single* cluster (not multiple clusters stacked).
+"""
+
+# ╔═╡ 6cc0e536-970a-4e94-8449-6c358c31b3ec
+md"""
+# Miscentering correction
+
+For a given miscentering radius $R_{mc}$, we can correct for miscentering (by expanding in $R_{mc}/R$) using
+
+$G_+ \to G_+ + \frac14 \left(\frac{R_{mc}}{R}\right)^2 (4 G_+(R) - R G_+'(R) - R^2 G_+''(R) )$
+
+Note that:
+
+$R G_+'(R) + R^2 G_+''(R) = \partial_{\ln R}^2 G_+$
+"""
+
+# ╔═╡ 61671b5e-9a09-49ed-ba69-37852662f803
+begin
+	function miscenter_correct_G(
+		miscenter_correct::MiscenterCorrectNone, interpolate::I; R, G
+	) where I<: AbstractInterpolate
+		G
+	end
+	function miscenter_correct_G_covariance(
+		miscenter_correct::MiscenterCorrectNone, interpolate::I; R, G, G_covariance
+	) where I <: AbstractInterpolate
+		G_covariance
+	end
+
+	function __calculate_miscenter_corrected_GMsunpc2_small_Rmc(
+		interpolate::InterpolateR; RMpc, Rmc²Mpc, GMsunpc2
+	)
+		@assert length(RMpc) == length(GMsunpc2)
+		@assert length(RMpc) >= 3 "Need at least 3 data points for `MiscenterCorrectSmallRmc`"
+		
+		# Interpolate for diff
+		Gint = BSplineKit.interpolate(
+			RMpc, GMsunpc2,
+			# At least 3 (qudratic) b/c we diff 2 times
+			BSplineKit.BSplineOrder(max(3, interpolate.order)) 
+		)
+		dGint = BSplineKit.Derivative(1) * Gint
+		ddGint = BSplineKit.Derivative(2) * Gint
+
+		# The actual NLO correction formula
+		# Correct up to order O((Rmc/R)^2) (but not up to O(κ (Rmc/R)^2)!)
+		GMsunpc2 .- (1 ./ 4) .* (Rmc²Mpc ./ RMpc .^ 2) .* (
+			.- 4 .* GMsunpc2
+			.+ RMpc .* dGint.(RMpc)
+			.+ (RMpc .^ 2) .* ddGint.(RMpc)
+		)
+	end
+
+	function __calculate_miscenter_corrected_GMsunpc2_small_Rmc(
+		interpolate::InterpolateLnR; RMpc, Rmc²Mpc, GMsunpc2
+	)
+		@assert length(RMpc) == length(GMsunpc2)
+		@assert length(RMpc) >= 3 "Need at least 3 data points for `MiscenterCorrectSmallRmc`"
+		
+		# Interpolate for diff
+		Gint = BSplineKit.interpolate(
+			# NB: log = ln here. _Not_ log10!
+			log.(RMpc), GMsunpc2,
+			# At least 3 (qudratic) b/c we diff 2 times
+			BSplineKit.BSplineOrder(max(3, interpolate.order)) 
+		)
+		ddGint = BSplineKit.Derivative(2) * Gint
+
+		# The actual NLO correction formula
+		# Correct up to order O((Rmc/R)^2) (but not up to O(κ (Rmc/R)^2)!)
+		GMsunpc2 .- (1 ./ 4) .* (Rmc²Mpc ./ RMpc .^ 2) .* (
+			.- 4 .* GMsunpc2
+			# R df/dR + R^2 d^2 f/dR^2 = d^2 f / (d lnR)^2
+			.+ ddGint.(log.(RMpc))
+		)
+	end
+
+	function miscenter_correct_G(
+		miscenter_correct::MiscenterCorrectSmallRmc, interpolate::I; R, G
+	) where I<:AbstractInterpolate
+		__calculate_miscenter_corrected_GMsunpc2_small_Rmc(
+			interpolate;
+			RMpc=R ./ u"Mpc" .|> NoUnits,
+			Rmc²Mpc=miscenter_correct.Rmc² / u"Mpc^2" |> NoUnits,
+			GMsunpc2=G ./ u"Msun/pc^2" .|> NoUnits
+		) .* u"Msun/pc^2"
+	end	
+	
+	function miscenter_correct_G_covariance(
+		miscenter_correct::MiscenterCorrectSmallRmc, interpolate::I; R, G, G_covariance
+	) where I<:AbstractInterpolate
+		@assert length(R) == length(G) == size(G_covariance)[1] == size(G_covariance)[2]
+		RMpc = R ./ u"Mpc" .|> NoUnits
+		
+		# For ForwardDiff, all inputs in one big vector etc.
+		__calc_corrected_GMsunpc2(GMsunpc2_and_Rmc²Mpc2) = let
+
+			# Unpack the vector
+			Rmc²Mpc = GMsunpc2_and_Rmc²Mpc2[end]
+			GMsunpc2 = GMsunpc2_and_Rmc²Mpc2[1:end-1]
+	
+			__calculate_miscenter_corrected_GMsunpc2_small_Rmc(
+				interpolate; RMpc=RMpc, Rmc²Mpc=Rmc²Mpc, GMsunpc2=GMsunpc2
+			)
+		end
+
+		# For ForwardDiff.jl all input in one big vector
+		input = fill(NaN, length(G)+1)
+		input[1:end-1] .= G ./ u"Msun/pc^2" .|> NoUnits
+		input[end] = miscenter_correct.Rmc² / u"Mpc^2" |> NoUnits
+
+		G_corrected = __calc_corrected_GMsunpc2(input) .* u"Msun/pc^2"
+		jac = ForwardDiff.jacobian(__calc_corrected_GMsunpc2, input)
+		G_cov_corrected = let
+			input_cov = zeros(length(G)+1, length(G)+1)
+			input_cov[1:end-1, 1:end-1] .= G_covariance ./ u"(Msun/pc^2)^2"
+			input_cov[end, end] = (miscenter_correct.σ_Rmc² ^2) ./ u"(Mpc^2)^2"
+			# See here https://juliadiff.org/ForwardDiff.jl/stable/user/api/
+			# jac[α, i] = ∂ function(α)/∂x[i]
+			# So the correct thing is jac * Cov * transpose(jac)
+			# (and _not_ transpose(jac) * Cov * jac)
+			out_cov = jac * input_cov * jac'
+			# Units
+			out_cov .* u"(Msun/pc^2)^2"
+		end
+		
+		G_cov_corrected
+	end
+end
+
+# ╔═╡ bb1aa65a-90b7-4d39-8f54-e1b306d506bb
+md"""
+# Actual deprojection
 """
 
 # ╔═╡ ca33d61e-018e-4976-8c0b-0aba837a2af4
@@ -666,9 +922,19 @@ begin
 		f::typeof([1.0/u"Msun/pc^2"]),
 		R::typeof([1.0*u"Mpc"]),
 		interpolate::I,
-		extrapolate::E
-	) where {E<:AbstractExtrapolate,I<:AbstractInterpolate}
+		extrapolate::E,
+		miscenter_correct::MC=MiscenterCorrectNone(),
+	) where {
+		E<:AbstractExtrapolate,
+		I<:AbstractInterpolate,
+		MC<:AbstractMiscenterCorrect
+	}
 		@assert length(G) == length(f) == length(R) "G, f, R must have same length"
+		
+		# We do miscenter correction before running the actual deprojection, at the
+		# level of the input G
+		G = miscenter_correct_G(miscenter_correct, interpolate; R=R, G=G)
+		
 		@assert !any(G .* f .>= 1.0) "G*f must be < 1"
 	
 		RMpc = R ./ u"Mpc"
@@ -714,11 +980,21 @@ begin
 		f::typeof(1.0/u"Msun/pc^2"),
 		R::typeof([1.0*u"Mpc"]),
 		interpolate::I,
-		extrapolate::E
-	) where {E<:AbstractExtrapolate,I<:AbstractInterpolate}
+		extrapolate::E,
+		miscenter_correct::MC=MiscenterCorrectNone(),
+	) where {
+		E<:AbstractExtrapolate,
+		I<:AbstractInterpolate,
+		MC<:AbstractMiscenterCorrect
+	}
 		@assert length(G) == length(R) "G, R must have same length"
+		
+		# We do miscenter correction before running the actual deprojection, at the
+		# level of the input G
+		G = miscenter_correct_G(miscenter_correct, interpolate; R=R, G=G)
+		
 		@assert !any(G .* f .>= 1.0) "G*f must be < 1"
-	
+		
 		RMpc = R ./ u"Mpc"
 		Gf_unchecked = get_interpolation_RMpc(
 			extrapolate, interpolate;
@@ -751,8 +1027,23 @@ function calculate_gobs_and_covariance_in_bins(;
 		R::typeof([1.0*u"Mpc"]),
 		G_covariance::typeof([1.0 1.0] .* u"(Msun/pc^2)^2"),
 		interpolate::I,
-		extrapolate::E
-	) where {E<:AbstractExtrapolate,I<:AbstractInterpolate}
+		extrapolate::E,
+		miscenter_correct::MC=MiscenterCorrectNone(),
+	) where {
+		E<:AbstractExtrapolate,
+		I<:AbstractInterpolate,
+		MC<:AbstractMiscenterCorrect
+	}
+
+	# We do miscenter correction before running the actual deprojection, at the level
+	# of the input G and its covariance
+	(G, G_covariance) = (
+		miscenter_correct_G(
+			miscenter_correct, interpolate; R=R, G=G),
+		miscenter_correct_G_covariance(
+			miscenter_correct, interpolate; R=R, G=G, G_covariance=G_covariance
+		),
+	)
 
 	RMpc = R ./ u"Mpc" .|> NoUnits
 
@@ -761,14 +1052,16 @@ function calculate_gobs_and_covariance_in_bins(;
 		f=f,
 		R=R,
 		interpolate=interpolate,
-		extrapolate=extrapolate
+		extrapolate=extrapolate,
+		miscenter_correct=MiscenterCorrectNone(), # already done above
 	)
 	__get_gobs(f::typeof(1.0/u"Msun/pc^2"); G_no_units) = calculate_gobs_fconst(;
 		G=G_no_units .* u"Msun/pc^2",
 		f=f,
 		R=R,
 		interpolate=interpolate,
-		extrapolate=extrapolate
+		extrapolate=extrapolate,
+		miscenter_correct=MiscenterCorrectNone(), # already done above
 	)
 
 	# Forward-diff
@@ -804,7 +1097,8 @@ end
 
 # ╔═╡ f4311bdf-db19-4886-93f2-51143e6845bc
 md"""
-## Test: The f=const and f!=const versions agree
+# Tests
+## f=const and f!=const versions agree
 
 when f is constant
 """
@@ -849,7 +1143,7 @@ end
 
 # ╔═╡ 2dbc3c0b-8050-448b-b836-aafc21a7f189
 md"""
-## Test: Covariance matrix in $Gf \ll 1$ limit = what we had for $C_{\alpha i}$ thing
+## Covariance matrix in $Gf \ll 1$ limit = what we had for $C_{\alpha i}$ thing
 
 Because in this limit $\Delta \Sigma$ is just $G$ and $f$ drops out and we can apply our simpler calculation from galaxy-galaxy weak lensing (where $\kappa$ is negligible).
 """
@@ -936,7 +1230,7 @@ end
 
 # ╔═╡ 981960ac-5f53-4175-a93d-660285acc372
 md"""
-## Test reconstruction: Looks good out to $\sim$ Mpc
+## Reconstruction: Looks good out to $\sim$ Mpc
 
 This is for $\rho \sim 1/r^2(1 + r^2)$ essentially. So SIS core, then $1/r^4$ fall off (reason: that's what Mathematica could do analytically)
 
@@ -1040,7 +1334,7 @@ md"""
 
 # ╔═╡ 9dcd6d67-90f6-4cd2-843c-02b3f6d196cd
 md"""
-## Test: SIS reconstruction works also in tail
+## SIS reconstruction works also in tail
 
 (as it must, that's what this test is for to check)
 """
@@ -1112,12 +1406,129 @@ end
 # ╔═╡ dd9afde0-ea99-41c5-8b86-da1c91a09fc4
 @plutoonly test_reconstruction_SIS(logRMpc_bin_width=.12, interpolate=InterpolateR(2))
 
+# ╔═╡ e3401c57-3fe6-4526-a128-387672b33863
+md"""
+## Miscentering correction
+"""
+
+# ╔═╡ bfd8b4e9-4b43-4720-bcc2-9263ac2d2362
+@plutoonly let
+	# Test: R and ln R interpolation agree with small bins
+
+	R = (.4:.003:3.0) .* u"Mpc"
+	Gfunc = R -> 300u"Msun/pc^2" / (R/u"Mpc") |> u"Msun/pc^2"
+	G = Gfunc.(R)
+
+	mc = MiscenterCorrectSmallRmc(1.0u"Mpc^2", 0.5u"Mpc^2")
+	G_corr_R =  miscenter_correct_G(mc, InterpolateR(1), R=R, G=G)
+	G_corr_lnR =  miscenter_correct_G(mc, InterpolateLnR(1), R=R, G=G)
+
+	@assert all(abs.(G_corr_R ./ G_corr_lnR .- 1) .< .02) "R and ln R interpolations should agree well for small bins"
+
+	G_cov = diagm( (.1 .* G) .^ 2)
+	G_corr_cov_R = miscenter_correct_G_covariance(
+		mc, InterpolateR(1);
+		R=R, G=G, G_covariance=G_cov
+	)
+	G_corr_cov_lnR = miscenter_correct_G_covariance(
+		mc, InterpolateLnR(1);
+		R=R, G=G, G_covariance=G_cov
+	)
+	@assert all(abs.(G_corr_cov_R ./ G_corr_cov_lnR .- 1) .< .2) "R and ln R interpolations should agree well for small bins (covariance)"
+end
+
+# ╔═╡ c91c0b29-b152-4c49-b90d-5447b2908f0d
+@plutoonly let
+	# Test: Miscentering correction correctly corrects
+
+	p_original = __demo.ProfileSIS(
+		M1Mpc=4e14u"Msun",
+		x0=0u"Mpc", # Centered
+		y0=0u"Mpc",
+	)
+	p_miscentered = __demo.ProfileSIS(
+		M1Mpc=4e14u"Msun",
+		x0=.16u"Mpc", # Not centered
+		y0=0u"Mpc",
+	)
+	Σcrit = 3000u"Msun/pc^2"
+
+	R = collect(.4:.01:3.0) .* u"Mpc"
+
+	calc_gobs = (p, miscenter_correct) -> let 
+		gt = __demo.calculate_azimuthally_averaged_gt.(R, Ref(p); Σcritinv=1/Σcrit)
+		f = 1/Σcrit
+		G = gt*Σcrit
+		res = calculate_gobs_and_covariance_in_bins(
+			R=R, G=G, f=f,
+			G_covariance=zeros(length(R), length(R)) .* u"(Msun/pc^2)^2",
+			interpolate=InterpolateR(2),
+			extrapolate=ExtrapolatePowerDecay(1), # SIS (not exact here!)
+			miscenter_correct=miscenter_correct
+		)
+
+		(res.gobs, res.gobs_stat_err)
+	end
+
+	(gobs_centered, _) = calc_gobs(p_original, MiscenterCorrectNone())
+	(gobs_uncorrected, _) = calc_gobs(p_miscentered, MiscenterCorrectNone())
+	(gobs_corrected, gobs_uncorrected_stat_err) = calc_gobs(
+		p_miscentered,
+		MiscenterCorrectSmallRmc(
+			# Correct by the actual Rmc
+			Rmc²=(.16u"Mpc")^2,
+			# For later: use (uncertainty of Rmc^2) = Rmc^2
+			σ_Rmc²=(.16u"Mpc")^2
+		)
+	)
+	gobs_true = (R -> (u"G"/R^2)*R*4e14u"Msun"/1u"Mpc" |> u"m/s^2").(R)
+
+	# Assert some stuff
+	# 1) reconstruction works for correctly centered profile (permill)
+	@assert all(abs.(gobs_centered ./ gobs_true .- 1) .< .003)
+	# 2a) reconstruction _doesn't_ work for miscentered profile at small radii (>5%)
+	sel = R .< .5u"Mpc"
+	@assert all(abs.(gobs_uncorrected[sel] ./ gobs_true[sel] .- 1) .> .05)
+	# 2b) at large radii it slowly gets better (naturally) (<1.5% here)
+	sel = R .> 1.0u"Mpc"
+	@assert all(abs.(gobs_uncorrected[sel] ./ gobs_true[sel] .- 1) .< .015)
+	# 3a) Miscentering correction helps at small radii! (btter than 1.1%)
+	sel = R .< .5u"Mpc"
+	@assert all(abs.(gobs_corrected[sel] ./ gobs_true[sel] .- 1) .< .011)
+	# 3b) Miscentering correction also helps at large radii (now permill!)
+	sel = R .> 1.0u"Mpc"
+	@assert all(abs.(gobs_corrected[sel] ./ gobs_true[sel] .- 1) .< .003)
+
+	# 4) Linearity in Rmc^2 means: Uncertainty in gobs induced by Rmc^2 = gobs[Rmc^2-Rmc^2] - gobs[Rmc^2=0] (most are actually much better than 9% -- but apparently some outlier is there?)
+	@assert all(abs.(abs.(gobs_uncorrected .- gobs_corrected) ./gobs_uncorrected_stat_err .- 1) .< .09)
+
+	# Plots that show this visually
+	plot(
+		R, gobs_centered ./ gobs_true,
+		label="M reconst. original / M true", color=:black,
+		ylim=(:auto, 1.05)
+	)
+	plot!(R,
+		gobs_corrected ./ gobs_true,
+		ribbon=gobs_uncorrected_stat_err ./ gobs_true,
+		label="M reconst. miscentered, corrected / M true", color=3, marker=:diamond, ms=2,
+	)
+	plot!(
+		R, gobs_uncorrected ./ gobs_true,
+		label="M reconst. miscentered / M true", color=1, marker=:diamond, ms=2,
+	)
+end
+
 # ╔═╡ Cell order:
 # ╠═8f04c59b-a109-4032-9235-1acc6f8ad9b4
 # ╠═4bdde00d-5d78-45e5-8c4e-a790f7431a3c
 # ╠═d7ce151b-4732-48ea-a8a5-5bfbe94d119b
+# ╠═2bd8f9c4-ed93-406f-974e-3539d44f21c4
 # ╠═9269044a-217b-48ef-b6f1-266a75890956
 # ╟─52cadcf0-a9ae-4e91-ac44-21e6fd25dabc
+# ╟─6cc0e536-970a-4e94-8449-6c358c31b3ec
+# ╠═61671b5e-9a09-49ed-ba69-37852662f803
+# ╟─bb1aa65a-90b7-4d39-8f54-e1b306d506bb
 # ╟─ca33d61e-018e-4976-8c0b-0aba837a2af4
 # ╠═3e5aa347-e19e-4107-a85e-30aa2515fb3a
 # ╟─c8046b24-dfe7-4bf2-8787-b33d855e586f
@@ -1144,3 +1555,7 @@ end
 # ╟─9dcd6d67-90f6-4cd2-843c-02b3f6d196cd
 # ╠═dd9afde0-ea99-41c5-8b86-da1c91a09fc4
 # ╠═cda4a385-3c68-430d-8e86-abd54374dffa
+# ╟─e3401c57-3fe6-4526-a128-387672b33863
+# ╠═bfd8b4e9-4b43-4720-bcc2-9263ac2d2362
+# ╠═c91c0b29-b152-4c49-b90d-5447b2908f0d
+# ╟─3f004698-b952-462f-8824-5c78ab1e08ad
