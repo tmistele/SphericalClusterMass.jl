@@ -1,6 +1,6 @@
-# Galaxy cluster mass profiles from gravitational lensing assuming spherical symmetry
+# Galaxy cluster mass profiles from weak gravitational lensing assuming spherical symmetry
 
-Package to infer galaxy cluster mass profiles from lensing data assuming only spherical symmetry (and not assuming a specific mass profile such as an NFW profile).
+Package to infer galaxy cluster mass profiles from weak-lensing data assuming only spherical symmetry (and not assuming a specific mass profile such as an NFW profile).
 See [arXiv:2408.07026](https://arxiv.org/abs/2408.07026) for details.
 
 ## Installation
@@ -106,3 +106,27 @@ result = calculate_gobs_fconst(
     interpolate=InterpolateR(1),
 ).(R ./ u"Mpc")
 ```
+
+### Correct for miscentering
+
+To correct for miscentering (to leading order in $R_{\mathrm{mc}}/R$ where $R_{\mathrm{mc}}$ is the miscentering radius), you can use the `miscenter_correct` argument:
+
+```julia
+result = calculate_gobs_and_covariance_in_bins(
+    R=R,
+    G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
+    f=1e-3 .* [.9, .9, .9] ./ u"Msun/pc^2",
+    G_covariance=diagm((1e2 .* [.3, .2, .1] .* u"Msun/pc^2") .^ 2),
+    extrapolate=ExtrapolatePowerDecay(1),
+    interpolate=InterpolateR(1),
+    # This will (approximately) correct for miscentering by `Rmc²`.
+    # The uncertainty `σ_Rmc²` on `Rmc²` will be propagated into the covariance matrix.
+    # The default is `MiscenterCorrectNone()`, which does not correct for miscentering.
+    miscenter_correct=MiscenterCorrectSmallRmc(
+        Rmc²=(.16u"Mpc")^2,
+        σ_Rmc²=(.16u"Mpc")^2
+    )
+)
+```
+
+The functions  `calculate_gobs_fconst` and `calculate_gobs_fgeneral` also support the `miscenter_correct` argument.
