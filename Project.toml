@@ -1,7 +1,7 @@
 name = "SphericalClusterMass"
 uuid = "4e4236b1-b06d-4ded-9e3d-2d170138da79"
 authors = ["Tobias Mistele "]
-version = "0.0.7"
+version = "0.0.8"
 
 [deps]
 BSplineKit = "093aae92-e908-43d7-9660-e50ee39d5a0a"
