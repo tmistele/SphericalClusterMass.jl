@@ -122,9 +122,20 @@ result = calculate_gobs_and_covariance_in_bins(
     # This will (approximately) correct for miscentering by `Rmc²`.
     # The uncertainty `σ_Rmc²` on `Rmc²` will be propagated into the covariance matrix.
     # The default is `MiscenterCorrectNone()`, which does not correct for miscentering.
+    #
+    # Note: The "naive" (just following the formula in the paper) way to implement this
+    #       miscentering correction involves calculating numerical 2nd order derivatives.
+    #       By default, the implementation here avoids this. This is equivalent to the
+    #       "naive" way up to terms of order κ*(Rmc/R)^2 (that are neglected anyway).
+    #       To use the "naive" way of calculating the miscentering correction, use
+    #       `MiscenterCorrectSmallRmcPreprocessG` instead of `MiscenterCorrectSmallRmc`.
+    #       (The optional parameter ϵ is not available in this case.)
     miscenter_correct=MiscenterCorrectSmallRmc(
         Rmc²=(.16u"Mpc")^2,
-        σ_Rmc²=(.16u"Mpc")^2
+        σ_Rmc²=(.16u"Mpc")^2,
+        # Optional parameter to control numerical procedure. Make smaller for a slower
+        # and more precise calculation (but keep larger than available numerical precision!)
+        # ϵ=.001
     )
 )
 ```
