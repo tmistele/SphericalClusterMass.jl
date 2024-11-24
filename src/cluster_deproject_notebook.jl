@@ -32,251 +32,6 @@ begin
 	using Plots
 end
 
-# ╔═╡ 1ae70636-b3ce-4ac7-b827-e8ec615bde29
-module old_gobs_from_ΔΣ
-	using Unitful
-	using UnitfulAstro
-	using Dierckx
-
-	abstract type AbstractExtrapolateΔΣ end
-	struct ExtrapolateΔΣSIS <: AbstractExtrapolateΔΣ end
-
-	gobs_analytical_tail_factor(ex::ExtrapolateΔΣSIS;
-			RoverRmax, RMpcMax, last_RMpc_bin_edge) = let
-		(1/RoverRmax)*(1 - sqrt(1-RoverRmax^2))
-	end
-
-	function calculate_gobs(; R, ΔΣ̂, last_RMpc_bin_edge,
-			interpolation_order=1, extrapolate=ExtrapolateΔΣSIS())
-	
-		RMpcvals = R ./ u"Mpc" .|> NoUnits
-		RMpcMax = RMpcvals[end]
-	
-		@assert RMpcMax <= last_RMpc_bin_edge "Rmax is larger than last bin edge?!"
-	
-		prefactors = 4*u"G"*u"Msun/pc^2" .|> u"m/s^2"
-	
-		if length(ΔΣ̂) == 1
-			# Cannot construct ΔΣ̂func below if there's only one data point
-			return [prefactors * ΔΣ̂[end] * gobs_analytical_tail_factor(extrapolate;
-				RoverRmax=1.0, RMpcMax=RMpcMax, last_RMpc_bin_edge=last_RMpc_bin_edge)]
-		end
-	
-		ΔΣ̂func = Spline1D(
-			RMpcvals, ΔΣ̂,
-			# Just b/c of floating point inexactness. We don't actually need ΔΣ̂ outside
-			# where it's defined
-			bc="nearest",
-			k=interpolation_order
-		)
-	
-		integrals = [
-			let
-				RMpc = RMpcvals[i]
-				RoverRmax = RMpc/RMpcMax
-	
-				# The interal up to Rmax
-				res_numerical_integral = if i == length(RMpcvals)
-					# At the last data point, ther's only the tail left
-					# Exlicit branch here b/c `Spline1D(...)` fails when we
-					# give just a single value in θs (I think?)
-					0
-				else
-					# From where on we do the numerical integral
-					# (where R/sin θ = Rmax)
-					θmin = asin(RoverRmax)
-	
-					# Where we evaluate the integrand
-					# (More points mean smaller error, but slower)
-					θs = LinRange(θmin, π/2, 20)
-	
-					# ΔΣ(R/sin θ)
-					integrand = Spline1D(
-						θs, ΔΣ̂func.(RMpc ./ sin.(θs)),
-						bc="error",
-						k=1 # Keep this k=1 even for larger `interpolation_order`
-					)
-					
-					# This (from DierckX) is faster than quadgk
-					integrate(integrand, θs[begin], θs[end])
-				end
-				
-				# Analytical rest of the integral beyond Rmax
-				res_analytical_tail = ΔΣ̂[end] * gobs_analytical_tail_factor(extrapolate;
-					RoverRmax=RoverRmax, RMpcMax=RMpcMax,
-					last_RMpc_bin_edge=last_RMpc_bin_edge,
-				)
-	
-				# Return the full integral
-				res_numerical_integral+res_analytical_tail
-			end
-			for i in 1:length(RMpcvals)
-		]
-		prefactors .* integrals
-	end
-
-	function fast_gobs_Cαi(; R::typeof([1.0u"Mpc"]), C, α::Int64,
-			extrapolate::E,
-			last_RMpc_bin_edge::Float64
-		) where {E <: AbstractExtrapolateΔΣ}
-		Δθ_αi(α, i) = asin(R[α]/R[i]) - asin(R[α]/R[i+1])
-	
-		f_αi(α, i) = (
-			-R[α] * atanh(sqrt(1 - (R[α]/R[i])^2 ))
-			+R[α] * atanh(sqrt(1 - (R[α]/R[i+1])^2 ))
-			-R[i] * Δθ_αi(α, i)
-		) / (R[i+1] - R[i])
-	
-		f_cont(α) = gobs_analytical_tail_factor(
-			extrapolate;
-			RoverRmax=R[α]/R[end],
-			RMpcMax=R[end] / u"Mpc" |> NoUnits,
-			last_RMpc_bin_edge=last_RMpc_bin_edge
-		)
-		
-		@assert length(C) == length(R)
-		
-		# Leave the C[begin:α-1] part of C untouched for perf (don't zero out or so)
-		if α < length(C)
-			C[α] = Δθ_αi(α, α) - f_αi(α, α)
-		end
-		for i in α+1:length(C)-1
-			C[i] = Δθ_αi(α, i) - f_αi(α, i) + f_αi(α, i-1)
-		end
-		if α == length(C)
-			C[length(C)] = f_cont(α)
-		else
-			C[length(C)] = f_cont(α) + f_αi(α, length(C)-1)
-		end
-		nothing
-	end
-	function calculate_gobs_fast(;  R, ΔΣ̂,
-			extrapolate=ExtrapolateΔΣSIS(), last_RMpc_bin_edge::Float64)
-		prefactor = 4*u"G"*u"Msun/pc^2" |> u"m/s^2"
-		gobs = fill(NaN*u"m/s^2", length(R))
-		C = zeros(length(R)) # Don't allocate in loop
-		for α in eachindex(gobs)
-			fast_gobs_Cαi(
-				R=R, C=C, α=α,
-				extrapolate=extrapolate, last_RMpc_bin_edge=last_RMpc_bin_edge
-			)
-			gobs[α] = prefactor * sum(C[i]*ΔΣ̂[i] for i in α:length(C))
-		end
-		gobs
-	end
-	function calculate_gobs_staterr_fast(; R, σ²_ΔΣ̂,
-			# NOTE: Here `extrapolate` is that of the `gobs` for which we now shall
-			#       calculate the error.
-			extrapolate=ExtrapolateΔΣSIS(), last_RMpc_bin_edge::Float64)
-		prefactor = 4*u"G"*u"Msun/pc^2" |> u"m/s^2"
-		σ_gobs = fill(NaN*u"m/s^2", length(R))
-		C = zeros(length(R)) # Don't allocate in loop
-		for α in eachindex(σ_gobs)
-			fast_gobs_Cαi(
-				R=R, C=C, α=α,
-				extrapolate=extrapolate, last_RMpc_bin_edge=last_RMpc_bin_edge
-			)
-			σ_gobs[α] = prefactor * sqrt(sum( C[i]^2*σ²_ΔΣ̂[i] for i in α:length(C)) )
-		end
-		σ_gobs
-	end
-	function to_bin_centers(edges)
-		widths = circshift(edges, -1) .- edges
-		( edges .+ (widths./2) )[1:end-1]
-	end
-	function calculate_gobs_covariance_fast(;
-			# NOTE: Here `extrapolate` is that of the `gobs` for which we now shall
-			#       calculate the error.
-			extrapolate=ExtrapolateΔΣSIS(),
-			σ²_ΔΣ̂_l,
-			w̄l_unnormalized,
-			∑ₗ_w̄l_unnormalized,
-			l_r_bin_edges,
-			out::Matrix{Float64}
-		)
-	
-		prefactor = (4*u"G"*u"Msun/pc^2")^2 ./ u"(m/s^2)^2" |> NoUnits
-	
-		l_len = size(σ²_ΔΣ̂_l, 1)
-		Nbins = size(σ²_ΔΣ̂_l, 2)
-		@assert size(out) == (Nbins, Nbins)
-	
-		cov_αβ(α, β) = let
-			# These need to be inside cov_αβ so different threads have their own buffers
-			# to write into
-			Cα = zeros(Nbins) # Don't allocate in hot loop
-			Cβ = zeros(Nbins)
-			
-			result = 0.0
-			for l in 1:l_len
-	
-				# Zero weight means there were not sources at some radial bin for this l.
-				# So we skipped that radial bin in the gobs calculation for that l.
-				# Thus, the gobs_l in that radial bin cannot co-vary with anything.
-				# It was just left out.
-				if w̄l_unnormalized[l, α] == 0 || w̄l_unnormalized[l, β] == 0
-					continue
-				end
-	
-				# Radial bins where we found sources (may not be the case at small radii)
-				# In the gobs calculation, we interpolated between only the radial bins
-				# that do have signal. For the others we just pretended there was no 
-				# radial bin there.
-				# So do the same here.
-				idx = (@view w̄l_unnormalized[l, :]) .> 0
-	
-				R = let
-					r_bin_centers = to_bin_centers(@view l_r_bin_edges[l, :])
-					r_bin_centers[idx]
-				end
-				last_RMpc_bin_edge = l_r_bin_edges[l, findlast(idx)+1] ./ u"Mpc"
-	
-				num_missing_before_α = count(x -> !x, @view idx[begin:α])
-				num_missing_before_β = count(x -> !x, @view idx[begin:β])
-	
-				Cα[:] .= 0.0
-				Cβ[:] .= 0.0
-				fast_gobs_Cαi(
-					R=R, C=(@view Cα[idx]),
-					# The `α` named parameter must now denote the position of the original
-					# radial bin in the reduced set of bins R.
-					α=α-num_missing_before_α,
-					extrapolate=extrapolate, last_RMpc_bin_edge=last_RMpc_bin_edge
-				)
-				fast_gobs_Cαi(
-					R=R, C=(@view Cβ[idx]),
-					# The `α` named parameter must now denote the position of the original
-					# radial bin in the reduced set of bins R.
-					α=β-num_missing_before_β,
-					extrapolate=extrapolate, last_RMpc_bin_edge=last_RMpc_bin_edge
-				)
-				term = w̄l_unnormalized[l, α]*w̄l_unnormalized[l, β]
-				term *= sum(Cα[i]*Cβ[i]*σ²_ΔΣ̂_l[l, i] for i in max(α, β):length(Cα))
-				
-				result += term
-			end
-			
-			prefactor*result / (∑ₗ_w̄l_unnormalized[α] * ∑ₗ_w̄l_unnormalized[β])
-		end
-	
-		Threads.@sync for (α, β) in Iterators.product(1:Nbins, 1:Nbins)
-			Threads.@spawn let
-				# Don't unnecessarily calculate off-diagonal elements twice.
-				# It's symmetric.
-				if α < β
-					# intent is `continue`. Because of Threads.@spawn this then needs to
-					# be a `return` instead
-					return
-				end
-				result = cov_αβ(α, β)
-				out[α, β] = result
-				out[β, α] = result
-			end
-		end
-		nothing
-	end
-end
-
 # ╔═╡ 3f004698-b952-462f-8824-5c78ab1e08ad
 module __demo
 	using Unitful
@@ -462,6 +217,268 @@ begin
 		Rmc²,
 		mc.σ_Rmc²
 	)
+end
+
+# ╔═╡ 1ae70636-b3ce-4ac7-b827-e8ec615bde29
+module old_gobs_from_ΔΣ
+	using Unitful
+	using UnitfulAstro
+	using Dierckx
+	import HypergeometricFunctions
+	import ..MiscenterCorrectNone, ..MiscenterCorrectSmallRmc
+	import ..ExtrapolatePowerDecay
+
+	function to_bin_centers(edges)
+		widths = circshift(edges, -1) .- edges
+		( edges .+ (widths./2) )[1:end-1]
+	end
+
+	gobs_analytical_tail_factor(ex::ExtrapolatePowerDecay; RoverRmax, RMpcMax) = let
+		x = RoverRmax
+		((1/x)^ex.n)*(if ex.n == 1
+			1 - sqrt(1-x^2)
+		elseif ex.n == 2
+			.5*(-x*sqrt(1-x^2) + asin(x))
+		else
+			hyp = HypergeometricFunctions.:_₂F₁(1/2, (1+ex.n)/2, (3+ex.n)/2, x^2)
+			x^(1+ex.n)*hyp/ (1+ex.n)
+		end)			
+	end
+
+	function fast_gobs_∑_i_Cαi²_σ²_ΔΣ̂(;
+		Rmc²::typeof(1.0u"Mpc^2"),
+		R::typeof([1.0u"Mpc"]),
+		σ²_ΔΣ̂,
+		extrapolate,
+	)
+		N = length(R)
+		out = fill(NaN, N)
+		C = zeros(N) # Don't allocate in loop
+		for α in eachindex(out)
+			fast_gobs_Cαi(; Rmc², R, C, α, extrapolate)
+			out[α] = sum(C[i]^2*σ²_ΔΣ̂[i] for i in α:N)
+		end
+		out
+	end
+	function fast_gobs_Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂(;
+		R::typeof([1.0u"Mpc"]),
+		ΔΣ̂,
+		extrapolate,
+	)
+		dummy_Rmc² = 1.0u"Mpc^2"
+		zero_Rmc² = 0.0u"Mpc^2"
+	
+		Mpc = 1.0u"Mpc"
+		
+		N = length(R)
+		out = fill(NaN, N)
+		C_dummy = zeros(N) # Don't allocate in loop
+		C_zero = zeros(N) # Don't allocate in loop
+		for α in eachindex(out)
+			# We know that Cαi = linear in Rmc^2.
+			# So:
+			#    Mpc^2 * (∂ Cαi / ∂ Rmc²)
+			#  = (Cαi|_(Rmc² = dummy^2) - Cαi|_(Rmc²=0)) / ( (dummy/Mpc)^2)
+			fast_gobs_Cαi(; Rmc²=dummy_Rmc², R, C=C_dummy, α, extrapolate)
+			fast_gobs_Cαi(; Rmc²=zero_Rmc², R, C=C_zero, α, extrapolate)
+			out[α] = sum(
+				((C_dummy[i] - C_zero[i])/(dummy_Rmc²/Mpc^2))*ΔΣ̂[i]
+				for i in α:N
+			)
+		end
+		out
+	end
+	function fast_gobs_Cαi(;
+		Rmc²::typeof(1.0u"Mpc^2"),
+		R::typeof([1.0u"Mpc"]), C, α::Int64,
+		extrapolate::ExtrapolatePowerDecay,
+	)
+	
+		# θ_(α i) = asin(R_α/R_i)
+		cosθ(α, i) = sqrt(1 - (R[α]/R[i])^2)
+		sinθ(α, i) = R[α]/R[i]
+		tanθ(α, i) = sinθ(α, i) / cosθ(α, i)
+	
+		# Integrals ∫_lower^upper go from lower = θ_(α,i+1) up to upper = θ_(α, i)
+		# NOTE: the order is i+1 -> i b/c R/θ grow in opposite directions!
+		# 
+		# Zap diverging terms using `zero_at_αα`
+		zero_at_αα(α, i) = val -> α == i  ? 0 : val
+		Δθ_αi(α, i) = asin(R[α]/R[i]) - asin(R[α]/R[i+1])
+		a_αi(α, i) = -atanh(cosθ(α, i)) - (-atanh(cosθ(α, i+1)))
+		b_αi(α, i) = 2Δθ_αi(α, i) + (
+			(- cosθ(α, i)  *sinθ(α, i)   - (tanθ(α, i)   |> zero_at_αα(α, i))) -
+			(- cosθ(α, i+1)*sinθ(α, i+1) -  tanθ(α, i+1)                   )
+		)
+		c_minus_dαi(α, i) = (
+			(-cosθ(α, i)   - (2/cosθ(α, i)  |> zero_at_αα(α, i))) -
+			(-cosθ(α, i+1) -  2/cosθ(α, i+1)                  )
+		)
+	
+		A_αi(α, i) = Δθ_αi(α, i) + (1/4)*(Rmc²/R[α]^2) * b_αi(α, i)
+		B_αi(α, i) = (
+			- Δθ_αi(α, i)*R[i]
+			+ a_αi(α, i)*R[α]
+			- (1/4)*(Rmc²/R[α]^2) * b_αi(α, i) * R[i]
+			+ (1/4)*(Rmc²/R[α]^2) * c_minus_dαi(α, i) * R[α]
+		) / (R[i+1] - R[i])
+	
+		# The (1+ (1/4) ...) corrects the last data point's ΔΣ using the "naive"
+		# miscnetering correction formula that needs 2nd derivatives. It's ok b/c
+		# we can do the calculation analytically for the SIS tail.
+		f_cont(α) = gobs_analytical_tail_factor(
+			extrapolate;
+			RoverRmax=R[α]/R[end],
+			RMpcMax=R[end] / u"Mpc" |> NoUnits,
+		)*(1 + (1/4)*(Rmc²/R[end]^2)*(4-extrapolate.n^2))
+		
+		@assert length(C) == length(R)
+		
+		# Leave the C[begin:α-1] part of C untouched for perf (don't zero out or so)
+		# (Same formulas as in `MiscenterCorrectNone` case, just with
+		#  Δθ -> A, f -> B)
+		if α < length(C)
+			C[α] = A_αi(α, α) - B_αi(α, α)
+		end
+		for i in α+1:length(C)-1
+			C[i] = A_αi(α, i) - B_αi(α, i) + B_αi(α, i-1)
+		end
+		if α == length(C)
+			C[length(C)] = f_cont(α)
+		else
+			C[length(C)] = f_cont(α) + B_αi(α, length(C)-1)
+		end
+		nothing
+	end
+	function calculate_gobs_staterr_fast(;
+		w̄l_unnormalized::AbstractMatrix,
+	 	∑ₗ_w̄l_unnormalized::AbstractMatrix,
+		∑_i_Cαi²_σ²_ΔΣ̂_l::AbstractMatrix,
+		Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l::AbstractMatrix,
+		σ_Rmc²::typeof(1.0u"Mpc^2")
+	)
+		term1 = sum((w̄l_unnormalized .^2) .* ∑_i_Cαi²_σ²_ΔΣ̂_l, dims=1)
+		term2 = sum(w̄l_unnormalized .* Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l, dims=1) .^ 2
+	
+		FourG² = (4u"G*Msun/pc^2")^2 ./ u"(m/s^2)^2" |> NoUnits
+		num = sqrt.(FourG² .* (term1 .+ (σ_Rmc²/u"Mpc^2")^2 .* term2))
+		num ./ ∑ₗ_w̄l_unnormalized
+	end
+	function calculate_gobs_covariance_fast(;
+			Rmc²::typeof(1.0u"Mpc^2"), σ_Rmc²::typeof(1.0u"Mpc^2"),
+			Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l::AbstractMatrix,
+			extrapolate::ExtrapolatePowerDecay,
+			σ²_ΔΣ̂_l::AbstractMatrix,
+			w̄l_unnormalized::AbstractMatrix,
+			∑ₗ_w̄l_unnormalized::AbstractMatrix,
+			l_r_bin_edges::AbstractMatrix,
+			out::Matrix{Float64}
+		)
+	
+		prefactor = (4*u"G"*u"Msun/pc^2")^2 ./ u"(m/s^2)^2" |> NoUnits
+	
+		l_len = size(σ²_ΔΣ̂_l, 1)
+		Nbins = size(σ²_ΔΣ̂_l, 2)
+		@assert size(out) == (Nbins, Nbins)
+	
+		cov_αβ(α, β) = let
+			# These need to be inside cov_αβ so different threads have their own buffers
+			# to write into
+			Cα = zeros(Nbins) # Don't allocate in hot loop
+			Cβ = zeros(Nbins)
+			
+			term1 = 0.0
+			term2_α = 0.0
+			term2_β = 0.0
+			for l in 1:l_len
+	
+				# Zero weight means there were not sources at some radial bin for this l.
+				# So we skipped that radial bin in the gobs calculation for that l.
+				# Thus, the gobs_l in that radial bin cannot co-vary with anything.
+				# It was just left out.
+				if w̄l_unnormalized[l, α] == 0 || w̄l_unnormalized[l, β] == 0
+					continue
+				end
+	
+				# Radial bins where we found sources (may not be the case at small radii)
+				# In the gobs calculation, we interpolated between only the radial bins
+				# that do have signal. For the others we just pretended there was no 
+				# radial bin there.
+				# So do the same here.
+				idx = (@view w̄l_unnormalized[l, :]) .> 0
+	
+				R = let
+					r_bin_centers = to_bin_centers(@view l_r_bin_edges[l, :])
+					r_bin_centers[idx]
+				end
+				last_RMpc_bin_edge = l_r_bin_edges[l, findlast(idx)+1] ./ u"Mpc"
+	
+				num_missing_before_α = count(x -> !x, @view idx[begin:α])
+				num_missing_before_β = count(x -> !x, @view idx[begin:β])
+	
+				Cα[:] .= 0.0
+				Cβ[:] .= 0.0
+				fast_gobs_Cαi(;
+					R, C=(@view Cα[idx]), Rmc²,
+					# The `α` named parameter must now denote the position of the original
+					# radial bin in the reduced set of bins R.
+					α=α-num_missing_before_α,
+					extrapolate,
+				)
+				fast_gobs_Cαi(;
+					R, C=(@view Cβ[idx]), Rmc²,
+					# The `α` named parameter must now denote the position of the original
+					# radial bin in the reduced set of bins R.
+					α=β-num_missing_before_β,
+					extrapolate
+				)
+				
+				term1 += (
+					w̄l_unnormalized[l, α]*w̄l_unnormalized[l, β]*
+					sum(Cα[i]*Cβ[i]*σ²_ΔΣ̂_l[l, i] for i in max(α, β):length(Cα))
+				)
+				term2_α += (
+					w̄l_unnormalized[l, α]*
+					Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l[l, α]
+				)
+				term2_β += (
+					w̄l_unnormalized[l, β]*
+					Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l[l, β]
+				)
+			end
+			
+			prefactor*(
+				term1 +
+				(σ_Rmc²/u"Mpc^2")^2 * term2_α*term2_β
+			) / (∑ₗ_w̄l_unnormalized[α] * ∑ₗ_w̄l_unnormalized[β])
+		end
+	
+		Threads.@sync for (α, β) in Iterators.product(1:Nbins, 1:Nbins)
+			Threads.@spawn let
+				# Don't unnecessarily calculate off-diagonal elements twice.
+				# It's symmetric.
+				if α < β
+					# intent is `continue`. Because of Threads.@spawn this then needs to
+					# be a `return` instead
+					return
+				end
+				result = cov_αβ(α, β)
+				out[α, β] = result
+				out[β, α] = result
+			end
+		end
+		nothing
+	end
+	function calculate_gobs_fast(; Rmc²::typeof(1.0u"Mpc^2"), R, ΔΣ̂, extrapolate)
+		prefactor = 4*u"G"*u"Msun/pc^2" |> u"m/s^2"
+		gobs = fill(NaN*u"m/s^2", length(R))
+		C = zeros(length(R)) # Don't allocate in loop
+		for α in eachindex(gobs)
+			fast_gobs_Cαi(; Rmc², R, C, α, extrapolate)
+			gobs[α] = prefactor * sum(C[i]*ΔΣ̂[i] for i in α:length(C))
+		end
+		gobs
+	end
 end
 
 # ╔═╡ 52cadcf0-a9ae-4e91-ac44-21e6fd25dabc
@@ -1369,57 +1386,76 @@ Because in this limit $\Delta \Sigma$ is just $G$ and $f$ drops out and we can a
 		diagm(σ_G .^ 2)
 	end
 
-	function do_test(; f, extrapolate, extrapolate_old, allowed_difference_factor=1.0)
-		@info "Testing with" nameof(typeof(f)) nameof(typeof(extrapolate))
-		new = calculate_gobs_and_covariance_in_bins(
+	__get_old_Rmc²(mc::MiscenterCorrectNone) = 0.0u"Mpc^2"
+	__get_old_Rmc²(mc::MiscenterCorrectSmallRmc) = mc.Rmc²
+	__get_old_σ_Rmc²(mc::MiscenterCorrectNone) = 0.0u"Mpc^2"
+	__get_old_σ_Rmc²(mc::MiscenterCorrectSmallRmc) = mc.σ_Rmc²
+
+	function do_test(; f,  extrapolate, allowed_difference_factor=1.0, allowed_difference_factor_err=1.0, miscenter_correct=MiscenterCorrectNone())
+		@info "Testing with" nameof(typeof(f)) extrapolate nameof(typeof(miscenter_correct))
+		new = calculate_gobs_and_covariance_in_bins(;
 			R=R, f=f, G=G, G_covariance=G_covariance,
 			interpolate=InterpolateR(1),
-			extrapolate=extrapolate,
+			extrapolate, miscenter_correct
 		)
+
+		Rmc² = __get_old_Rmc²(miscenter_correct)
+		σ_Rmc² = __get_old_σ_Rmc²(miscenter_correct)
 	
 		let
 			# Compare gobs
-			old_gobs = old_gobs_from_ΔΣ.calculate_gobs_fast(
-				R=R,
+			old_gobs = old_gobs_from_ΔΣ.calculate_gobs_fast(;
+				R, Rmc²,
 				ΔΣ̂=G ./ u"Msun/pc^2",
-				extrapolate=extrapolate_old,
-				last_RMpc_bin_edge=1.0, # Doesn't matter for SIS extrapolation
+				extrapolate,
 			)
 			max_difference = maximum(abs.((new.gobs .- old_gobs) ./ old_gobs))
 			@info "Test gobs" new.gobs old_gobs max_difference
 			@assert max_difference < 5e-8*allowed_difference_factor "old gobs != new gobs?!"
 		end
+
+		# Fake statcking 1 lens
+		w̄l_unnormalized = ones(length(R))'
+		∑ₗ_w̄l_unnormalized = ones(length(R))'
+		σ²_ΔΣ̂_l = (diag(G_covariance) ./ u"(Msun/pc^2)^2")'
+		∑_i_Cαi²_σ²_ΔΣ̂_l = old_gobs_from_ΔΣ.:fast_gobs_∑_i_Cαi²_σ²_ΔΣ̂(;
+			Rmc², R, σ²_ΔΣ̂=σ²_ΔΣ̂_l, extrapolate
+		)'
+		Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l = old_gobs_from_ΔΣ.:fast_gobs_Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂(;
+			R, ΔΣ̂=G ./ u"Msun/pc^2", extrapolate
+		)'
 	
 		let
 			# Compare gobs stat error
-			old_gobs_staterr = old_gobs_from_ΔΣ.calculate_gobs_staterr_fast(
-				R=R,
-				σ²_ΔΣ̂=diag(G_covariance) ./ u"(Msun/pc^2)^2",
-				extrapolate=extrapolate_old,
-				last_RMpc_bin_edge=1.0, # Doesn't matter for SIS extrapolation
-			)
+			old_gobs_staterr = old_gobs_from_ΔΣ.calculate_gobs_staterr_fast(;
+				w̄l_unnormalized,
+	 			∑ₗ_w̄l_unnormalized,
+				∑_i_Cαi²_σ²_ΔΣ̂_l,
+				Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l,
+				σ_Rmc²,
+			) .* u"m/s^2" |> vec
 			max_difference = maximum(abs.((new.gobs_stat_err .- old_gobs_staterr) ./ old_gobs_staterr))
 			@info "Test gobs stat err" new.gobs_stat_err old_gobs_staterr max_difference
-			@assert max_difference < 5e-8*allowed_difference_factor "old gobs stat err != new gobs stat err?!"
+			@assert max_difference < 5e-8*allowed_difference_factor_err "old gobs stat err != new gobs stat err?!"
 		end
 	
 		let
 			# Compare gobs covariance matrix
 			old_gobs_cov = fill(NaN, length(R), length(R))
 			old_gobs_from_ΔΣ.calculate_gobs_covariance_fast(;
-				# NOTE: Here `extrapolate` is that of the `gobs` for which we now shall
-				#       calculate the error.
-				σ²_ΔΣ̂_l=(diag(G_covariance) ./ u"(Msun/pc^2)^2")',
-				w̄l_unnormalized=ones(length(R))',
-				∑ₗ_w̄l_unnormalized=ones(length(R))',
+				Rmc², σ_Rmc²,
+				Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l,
+				σ²_ΔΣ̂_l,
+				w̄l_unnormalized,
+				∑ₗ_w̄l_unnormalized,
 				l_r_bin_edges=(R_bin_edges)',
-				extrapolate=extrapolate_old,
-				out=old_gobs_cov
+				extrapolate,
+				out=old_gobs_cov,
 			)
 			old_gobs_cov = old_gobs_cov .* u"(m/s^2)^2"
 			max_difference = maximum(abs.((new.gobs_stat_cov .- old_gobs_cov) ./ old_gobs_cov))
 			@info "Test gobs cov" new.gobs_stat_cov old_gobs_cov max_difference
-			@assert max_difference < 1e-6*allowed_difference_factor "old gobs stat cov != new gobs stat cov?!"	
+			@assert max_difference < 1e-6*allowed_difference_factor_err "old gobs stat cov != new gobs stat cov?!"	
 		end
 	end
 
@@ -1427,13 +1463,34 @@ Because in this limit $\Delta \Sigma$ is just $G$ and $f$ drops out and we can a
 	do_test(
 		f = .1e-6 .* [.9, 1.5, 1.9, .9] ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1),
-		extrapolate_old=old_gobs_from_ΔΣ.ExtrapolateΔΣSIS(),
 	)
 	# Same test but with the code that assumes f=const
 	do_test(
 		f = .1e-6 .* .9 ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1),
-		extrapolate_old=old_gobs_from_ΔΣ.ExtrapolateΔΣSIS(),
+	)
+
+	# Same tests but with n=2 and n=1/2
+	do_test(
+		f = .1e-6 .* .9 ./ u"Msun/pc^2",
+		extrapolate=ExtrapolatePowerDecay(1/2),
+	)
+	do_test(
+		f = .1e-6 .* .9 ./ u"Msun/pc^2",
+		extrapolate=ExtrapolatePowerDecay(2),
+	)
+
+	# Same test but with miscentering correction
+	do_test(
+		f = .1e-6 .* .9 ./ u"Msun/pc^2",
+		extrapolate=ExtrapolatePowerDecay(1),
+		miscenter_correct=MiscenterCorrectSmallRmc(
+			Rmc²=(.16u"Mpc")^2,
+			σ_Rmc²=(0.16u"Mpc")^2,
+			ϵ=1e-4
+		),
+		allowed_difference_factor=2000,
+		allowed_difference_factor_err=20000
 	)
 
 	@info "all good :)"
