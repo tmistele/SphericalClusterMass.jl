@@ -391,7 +391,19 @@ module old_gobs_from_ΔΣ
 			term2_α = 0.0
 			term2_β = 0.0
 			for l in 1:l_len
-	
+				# CARE: Do these two Rmc² related terms _before_ skipping below!
+				#       The condition (w̄[l, α] == 0 || w̄[l, β] == 0) is ok to skip for
+				#       the rest b/c that's proportional to the *product* of w̄[l, α] and
+				#       w̄[l, β]. But these two are sensitive to both _individually_. 
+				term2_α += (
+					w̄l_unnormalized[l, α]*
+					Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l[l, α]
+				)
+				term2_β += (
+					w̄l_unnormalized[l, β]*
+					Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l[l, β]
+				)
+				
 				# Zero weight means there were not sources at some radial bin for this l.
 				# So we skipped that radial bin in the gobs calculation for that l.
 				# Thus, the gobs_l in that radial bin cannot co-vary with anything.
@@ -436,14 +448,6 @@ module old_gobs_from_ΔΣ
 				term1 += (
 					w̄l_unnormalized[l, α]*w̄l_unnormalized[l, β]*
 					sum(Cα[i]*Cβ[i]*σ²_ΔΣ̂_l[l, i] for i in max(α, β):length(Cα))
-				)
-				term2_α += (
-					w̄l_unnormalized[l, α]*
-					Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l[l, α]
-				)
-				term2_β += (
-					w̄l_unnormalized[l, β]*
-					Mpc²_∑_i_∂Cαi∂Rmc²_ΔΣ̂_l[l, β]
 				)
 			end
 			
