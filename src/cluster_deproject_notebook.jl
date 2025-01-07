@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.3
+# v0.20.4
 
 using Markdown
 using InteractiveUtils
@@ -1121,14 +1121,14 @@ md"""
 # ╔═╡ 18dccd90-f99f-11ee-1bf6-f1ca60e4fcd0
 begin
 	# Non-constant f = <Σ_crit^(-1)>
-	function calculate_gobs_fgeneral(;
+	function __calculate_gobs_fgeneral(;
 		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
 		G, # typeof([1.0*u"Msun/pc^2"]),
 		f::typeof([1.0/u"Msun/pc^2"]),
 		R::typeof([1.0*u"Mpc"]),
 		interpolate::I,
 		extrapolate::E,
-		miscenter_correct::MC=MiscenterCorrectNone(),
+		miscenter_correct::MC,
 	) where {
 		E<:AbstractExtrapolate,
 		I<:AbstractInterpolate,
@@ -1182,14 +1182,14 @@ begin
 	end
 	
 	# Constant f = <Σ_crit^(-1)>
-	function calculate_gobs_fconst(;
+	function __calculate_gobs_fconst(;
 		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
 		G, # typeof([1.0*u"Msun/pc^2"])
 		f::typeof(1.0/u"Msun/pc^2"),
 		R::typeof([1.0*u"Mpc"]),
 		interpolate::I,
 		extrapolate::E,
-		miscenter_correct::MC=MiscenterCorrectNone(),
+		miscenter_correct::MC,
 	) where {
 		E<:AbstractExtrapolate,
 		I<:AbstractInterpolate,
@@ -1230,6 +1230,29 @@ begin
 			ΔΣ=ΔΣ, rMpc=RMpc, f∞=f, Gf=Gf,
 		)
 	end
+
+	function calculate_gobs(;
+		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
+		G, # typeof([1.0*u"Msun/pc^2"]),
+		# No type for f since we allow both vector and scalar
+		f,
+		R::typeof([1.0*u"Mpc"]),
+		interpolate::I,
+		extrapolate::E,
+		miscenter_correct::MC=MiscenterCorrectNone(),
+	) where {
+		E<:AbstractExtrapolate,
+		I<:AbstractInterpolate,
+		MC<:AbstractMiscenterCorrect
+	}
+		__calc_gobs(f::typeof([1.0/u"Msun/pc^2"])) = __calculate_gobs_fgeneral(;
+			G, f, R, interpolate, extrapolate, miscenter_correct
+		)
+		__calc_gobs(f::typeof(1.0/u"Msun/pc^2")) = __calculate_gobs_fconst(;
+			G, f, R, interpolate, extrapolate, miscenter_correct
+		)
+		__calc_gobs(f)
+	end
 end
 
 # ╔═╡ 2e3d91f1-6b0f-4f5e-9761-e6a359585653
@@ -1267,31 +1290,6 @@ function calculate_gobs_and_covariance_in_bins(;
 
 	RMpc = R ./ u"Mpc" .|> NoUnits
 
-	__get_gobs(
-		f::typeof([1.0/u"Msun/pc^2"]),
-		new_miscenter_correct;
-		G_no_units
-	) = calculate_gobs_fgeneral(;
-		G=G_no_units .* u"Msun/pc^2",
-		f=f,
-		R=R,
-		interpolate=interpolate,
-		extrapolate=extrapolate,
-		miscenter_correct=new_miscenter_correct, # _not_ the original one!
-	)
-	__get_gobs(
-		f::typeof(1.0/u"Msun/pc^2"),
-		new_miscenter_correct;
-		G_no_units
-	) = calculate_gobs_fconst(;
-		G=G_no_units .* u"Msun/pc^2",
-		f=f,
-		R=R,
-		interpolate=interpolate,
-		extrapolate=extrapolate,
-		miscenter_correct=new_miscenter_correct, # _not_ the original one!
-	)
-
 	# Forward-diff
 	# - requires a single argument as input
 	# - no units as input or output
@@ -1303,7 +1301,11 @@ function calculate_gobs_and_covariance_in_bins(;
 			miscenter_correct, input[end] .* u"Mpc^2"
 		)
 		
-		gobs = __get_gobs(f, new_miscenter_correct; G_no_units=input[1:end-1])
+		gobs = calculate_gobs(;
+			G=input[1:end-1] .* u"Msun/pc^2",
+			f, R, interpolate, extrapolate,
+			miscenter_correct=new_miscenter_correct, # _not_ the original one!
+		)
 		gobs.(RMpc) ./ u"m/s^2"
 	end
 
@@ -1338,14 +1340,14 @@ when f is constant
 # ╔═╡ 9dd1c7c4-a44c-4b5c-a810-b6b171ac2569
 @plutoonly let
 	# Test: For f = const, both methods should agree
-	gobs1overR = calculate_gobs_fconst(
+	gobs1overR = calculate_gobs(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=.9 ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1),
 		interpolate=InterpolateR(1),
 	)
-	gobs1overRinterpLnR = calculate_gobs_fconst(
+	gobs1overRinterpLnR = calculate_gobs(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=.9 ./ u"Msun/pc^2",
@@ -1355,14 +1357,14 @@ when f is constant
 	plot(RMpc -> gobs1overR(RMpc), .2, 1.3, label="Extrapolate 1/R, interpolateR(1)")
 	plot!(RMpc -> gobs1overRinterpLnR(RMpc), .2, 1.3, label="Extrapolate 1/R, interpolateLnR(1)")
 
-	gobs1overR = calculate_gobs_fgeneral(
+	gobs1overR = calculate_gobs(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=[.9, .9, .9] ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1),
 		interpolate=InterpolateR(1),
 	)
-	gobs1overRinterpLnR = calculate_gobs_fgeneral(
+	gobs1overRinterpLnR = calculate_gobs(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=[.9, .9, .9] ./ u"Msun/pc^2",
@@ -1651,7 +1653,7 @@ md"""
 		ylabel="gobs reconstructed / gobs real",
 	)
 	for n in [1/2, 1, 2, 4]
-		gobs_reconstructed = calculate_gobs_fgeneral(
+		gobs_reconstructed = calculate_gobs(
 			R=Rbins,
 			G=G.(Rbins),
 			f=f.(Rbins),
@@ -1699,7 +1701,7 @@ md"""
 
 	Σcrit = 3000u"Msun/pc^2"
 	f = 1/Σcrit
-	res_interpR = calculate_gobs_fconst(
+	res_interpR = calculate_gobs(
 		R=R, G=G, f=f,
 		interpolate=InterpolateR(1),
 		extrapolate=ExtrapolatePowerDecay(1),
@@ -1708,7 +1710,7 @@ md"""
 			σ_Rmc²=(.16u"Mpc")^2
 		)
 	).(R./u"Mpc")
-	res_interpLnR = calculate_gobs_fconst(
+	res_interpLnR = calculate_gobs(
 		R=R, G=G, f=f,
 		interpolate=InterpolateLnR(1),
 		extrapolate=ExtrapolatePowerDecay(1),
@@ -1923,7 +1925,7 @@ end
 # ╠═9dd1c7c4-a44c-4b5c-a810-b6b171ac2569
 # ╟─2dbc3c0b-8050-448b-b836-aafc21a7f189
 # ╠═2754de10-f637-46a4-ae6c-5e897206233a
-# ╠═1ae70636-b3ce-4ac7-b827-e8ec615bde29
+# ╟─1ae70636-b3ce-4ac7-b827-e8ec615bde29
 # ╟─981960ac-5f53-4175-a93d-660285acc372
 # ╠═53eb9c24-1113-4a78-a006-6487e5d8f732
 # ╠═da111d64-a4f5-4637-986c-3b26027c058b

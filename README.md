@@ -82,10 +82,10 @@ result = calculate_gobs_and_covariance_in_bins(
 
 ### Faster calculation without covariance matrix
 
-If one is not interested in the statistical uncertainties and covariances, one can use `calculate_gobs_fgeneral`
+If one is not interested in the statistical uncertainties and covariances, one can use `calculate_gobs`
 
 ```julia
-result = calculate_gobs_fgeneral(
+result = calculate_gobs(
     R=R,
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
     f=1e-3 .* [.9, .9, .9] ./ u"Msun/pc^2",
@@ -94,11 +94,10 @@ result = calculate_gobs_fgeneral(
 ).(R ./ u"Mpc")
 ```
 
-or, for the case assuming $f_c = \mathrm{const}$, one can use  `calculate_gobs_fconst`,
-
+If one has $f_c = \mathrm{const}$, one can also pass `f` as a scalar
 
 ```julia
-result = calculate_gobs_fconst(
+result = calculate_gobs(
     R=R,
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
     f=1e-3 * .9 / u"Msun/pc^2", # <-- This is now a scalar instead of a vector
@@ -123,10 +122,14 @@ result = calculate_gobs_and_covariance_in_bins(
     # The uncertainty `σ_Rmc²` on `Rmc²` will be propagated into the covariance matrix.
     # The default is `MiscenterCorrectNone()`, which does not correct for miscentering.
     #
-    # Note: The "naive" (just following the formula in the paper) way to implement this
-    #       miscentering correction involves calculating numerical 2nd order derivatives.
-    #       By default, the implementation here avoids this. This is equivalent to the
-    #       "naive" way up to terms of order κ*(Rmc/R)^2 (that are neglected anyway).
+    # Note: The "naive" way to implement this miscentering correction (just following
+    #       equations (22)+(23) in the paper) involves calculating numerical 2nd order
+    #       derivatives, which can be dicey. Therefore, the implementation here avoids
+    #       this. This implementation is not exactly equivalent to equations (22)+(23)
+    #       from the paper. It is, however, equivalent up to terms of order κ*(Rmc/R)^2
+    #       (which are beyond the order of approximation of (22)+(23)). Details will be
+    #       published in future work, but I'm happy to privately explain more in the
+    #       meantime.
     #       To use the "naive" way of calculating the miscentering correction, use
     #       `MiscenterCorrectSmallRmcPreprocessG` instead of `MiscenterCorrectSmallRmc`.
     #       (The optional parameter ϵ is not available in this case.)
@@ -140,4 +143,4 @@ result = calculate_gobs_and_covariance_in_bins(
 )
 ```
 
-The functions  `calculate_gobs_fconst` and `calculate_gobs_fgeneral` also support the `miscenter_correct` argument.
+The function `calculate_gobs` also supports the `miscenter_correct` argument.
