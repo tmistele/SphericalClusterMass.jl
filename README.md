@@ -5,12 +5,10 @@ See [arXiv:2408.07026](https://arxiv.org/abs/2408.07026) for details.
 
 ## Installation
 
-To use this package, first install it using the julia package manager.
-It's not yet uploaded to the official julia package repository.
-As a workaround it's possible to install like this
+You can install this package using the julia package manager
 
 ```julia
-pkg> add https://github.com/tmistele/SphericalClusterMass.jl#master
+pkg> add SphericalClusterMass
 ```
 
 ## Usage
