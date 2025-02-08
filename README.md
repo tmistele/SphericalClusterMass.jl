@@ -130,13 +130,9 @@ result = calculate_gobs_and_covariance_in_bins(
     #       meantime.
     #       To use the "naive" way of calculating the miscentering correction, use
     #       `MiscenterCorrectSmallRmcPreprocessG` instead of `MiscenterCorrectSmallRmc`.
-    #       (The optional parameter ϵ is not available in this case.)
     miscenter_correct=MiscenterCorrectSmallRmc(
         Rmc²=(.16u"Mpc")^2,
         σ_Rmc²=(.16u"Mpc")^2,
-        # Optional parameter to control numerical procedure. Make smaller for a slower
-        # and more precise calculation (but keep larger than available numerical precision!)
-        # ϵ=.001
     )
 )
 ```
