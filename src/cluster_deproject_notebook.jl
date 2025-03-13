@@ -1908,7 +1908,7 @@ end
 		@assert all(abs.(abs.(gobs_uncorrected .- gobs_corrected1) ./gobs_corrected1_stat_err .- 1) .< .01)
 		@assert all(abs.(abs.(gobs_uncorrected .- gobs_corrected2) ./gobs_corrected2_stat_err .- 1) .< .01)
 
-		# 5) Comparing `MiscenterCorrectSmallRmcPreprocessG` and `...PreprocessG` may
+		# 5) Comparing `MiscenterCorrectSmallRmc` and `...PreprocessG` may
 		# give slightly different results b/c they are equivalent only up to terms of
 		# order κ(Rmc/R)^2 which can be permill stuff here
 		@assert all(abs.(gobs_corrected1 .- gobs_corrected2) ./ abs.(gobs_corrected1) .< 8e-3)
@@ -1920,7 +1920,7 @@ end
 	# This makes κ very small.
 	Σcritfactor=1_000, interpolate=InterpolateR(2),
 	do_asserts = (; R, gobs_centered, gobs_true, gobs_uncorrected, gobs_corrected1, gobs_corrected2, gobs_corrected1_stat_err, gobs_corrected2_stat_err) -> let
-		# In this case, `MiscenterCorrectSmallRmcPreprocessG` and `...PreprocessG` 
+		# In this case, `MiscenterCorrectSmallRmc` and `...PreprocessG` 
 		# should be identical (they are mathematically equivalent in this case).
 		@assert all(abs.(gobs_corrected1 .- gobs_corrected2) ./ abs.(gobs_corrected1) .< 4e-5)
 	end
