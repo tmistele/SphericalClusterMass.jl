@@ -1000,7 +1000,7 @@ begin
 		extrapolate::E,
 		interpolate::I,
 		::Union{MiscenterCorrectNone, MiscenterCorrectSmallRmcPreprocessG};
-		ΔΣ, rMpc, f∞, Gf, dlog_Ĝ,
+		ΔΣ, rMpc, f∞, Gf, Ĝvalues,
 	) where {E<:AbstractExtrapolate, I<:AbstractInterpolate}
 		rMpcTail = maximum(rMpc)
 		GfTail = Gf(rMpcTail)
@@ -1022,13 +1022,18 @@ begin
 		extrapolate::ExtrapolatePowerDecay,
 		interpolate::I,
 		miscenter_correct::MiscenterCorrectSmallRmc;
-		ΔΣ, rMpc, f∞, Gf, dlog_Ĝ,
+		ΔΣ, rMpc, f∞, Gf, Ĝvalues,
 	) where I <: AbstractInterpolate
 		Rmc²Mpc = miscenter_correct.Rmc² / u"Mpc^2" |> NoUnits
 		ΔΣ̂(RMpc) = ΔΣ(RMpc)/u"Msun/pc^2" |> NoUnits
 		
 		rMpcTail = maximum(rMpc)
 		GfTail = Gf(rMpcTail)
+
+		dlog_Ĝ = get_interpolation_RMpc_dlog(
+			extrapolate, interpolate;
+			RMpc=rMpc, values=Ĝvalues
+		)
 
 		# For linear interpolation, these 
 		# are discontinuous! That's however not a problem -- as long as we have this 
@@ -1162,9 +1167,10 @@ begin
 			extrapolate, interpolate;
 			RMpc, values=G .* f
 		)
+		Ĝvalues = G ./ u"Msun/pc^2"
 		Ĝ = get_interpolation_RMpc(
 			extrapolate, interpolate;
-			RMpc, values=G ./ u"Msun/pc^2"
+			RMpc, values=Ĝvalues
 		)
 		f̂ = get_interpolation_RMpc_flat(
 			interpolate;
@@ -1189,15 +1195,10 @@ begin
 		ΔΣ(RMpc) = (u"Msun/pc^2")*(Ĝ(RMpc)/(1 - Gf(RMpc)))*(
 			1 - exp(-IR∞(RMpc))*f̂(RMpc)*JR∞(RMpc)
 		)
-		
-		dlog_Ĝ = get_interpolation_RMpc_dlog(
-			extrapolate, interpolate;
-			RMpc, values=G ./ u"Msun/pc^2"
-		)
 
 		from_ΔΣ_function(
 			extrapolate, interpolate, miscenter_correct;
-			ΔΣ, Gf, rMpc=RMpc, f∞=f[end], dlog_Ĝ,
+			ΔΣ, Gf, rMpc=RMpc, f∞=f[end], Ĝvalues,
 		)
 	end
 	
@@ -1245,14 +1246,9 @@ begin
 		IR∞ = calculate_I_R∞(extrapolate, interpolate; RMpc, Gf)
 		ΔΣ(RMpc) = (1/f)*(Gf(RMpc)/(1 - Gf(RMpc)))*exp(-IR∞(RMpc))
 
-		dlog_Ĝ = get_interpolation_RMpc_dlog(
-			extrapolate, interpolate;
-			RMpc, values=G ./ u"Msun/pc^2"
-		)
-
 		from_ΔΣ_function(
 			extrapolate, interpolate, miscenter_correct;
-			ΔΣ, Gf, rMpc=RMpc, f∞=f, dlog_Ĝ,
+			ΔΣ, Gf, rMpc=RMpc, f∞=f, Ĝvalues=G ./ u"Msun/pc^2",
 		)
 	end
 
