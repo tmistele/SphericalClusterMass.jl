@@ -1592,7 +1592,6 @@ We're asssuming 10% fake errors on $G$ measurements, just so we can test the err
 	pGf = plot(R -> G(R)*f(R)*(R/u"Mpc")^2, .1u"Mpc", 3u"Mpc", ylabel="G * f * R^2")
 
 	Rbins = 10 .^ (log10(.15):logRMpc_bin_width:log10(3.5)) .* u"Mpc"
-	last_RMpc_bin_edge = 3.8
 	p = plot(
 		RMpc -> gobs_real(RMpc*u"Mpc") * RMpc^2,
 		.15, 3.5, label="gobs real * R^2",
