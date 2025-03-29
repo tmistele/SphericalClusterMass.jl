@@ -38,6 +38,7 @@ result = calculate_gobs_and_covariance_in_bins(
     G_covariance=diagm((1e2 .* [.3, .2, .1] .* u"Msun/pc^2") .^ 2),
     # Extrapolate beyond last data point assuming G ~ 1/R.
     # Corresponds to a singular isothermal sphere.
+    # To extrapolate assuming an NFW profile, see `ExtrapolateNFW` below.
     extrapolate=ExtrapolatePowerDecay(1),
     # Interpolate linearly between discrete data points in "R-space".
     # - Quadratic interpolation is also a good choice, but a bit slower.
@@ -138,3 +139,25 @@ result = calculate_gobs_and_covariance_in_bins(
 ```
 
 The function `calculate_gobs` also supports the `miscenter_correct` argument.
+
+### Extrapolate assuming NFW profile
+
+To extrapolate assuming an NFW profile use `ExtrapolateNFW(cm)` where `cm` describes a mass-concentration relation.
+For now, only one relation from Maccio et al. 2008 is supported, but others can be added easily.
+
+```julia
+h=.7
+ρcrit = 1.85e11u"Msun/Mpc^3"
+result = calculate_gobs_and_covariance_in_bins(
+    R=R,
+    G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
+    f=1e-3 .* [.9, .9, .9] ./ u"Msun/pc^2",
+    G_covariance=diagm((1e2 .* [.3, .2, .1] .* u"Msun/pc^2") .^ 2),
+    # This will continue with an NFW-like profile matched to the last data point,
+    # assuming the Maccio et al 2008 mass-concentration relation for a specific Hubble
+    # constant h = H0/(100 km s⁻¹ Mpc⁻¹) and critical density at the redshift of interest.
+    extrapolate=ExtrapolateNFW(CMRelationMaccio2008(ρcrit, h)),
+    interpolate=InterpolateR(1),
+)
+```
+

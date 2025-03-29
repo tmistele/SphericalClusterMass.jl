@@ -29,109 +29,7 @@ begin
 	using UnitfulAstro
 	using ForwardDiff
 	using LinearAlgebra
-	using Plots
-end
-
-# ╔═╡ 3f004698-b952-462f-8824-5c78ab1e08ad
-module __demo
-	using Unitful
-	using UnitfulAstro
-
-	# This is copied from the demo code I wrote for the paper.
-	# Perhaps put the demo code properly into a sub-module or so here.
-	abstract type AbstractProfile end
-	function calculate_γ12(p::P, x, y; Σcrit) where P<:AbstractProfile
-		R = sqrt( (x-p.x0)^2 + (y-p.y0)^2 )
-		dϕ = calculate_dR_lenspot(p, R; Σcrit=Σcrit)
-		ddϕ = calculate_ddR_lenspot(p, R; Σcrit=Σcrit)
-		tmp = (R*ddϕ - dϕ)/R^3
-		
-		γ1 = .5 * ( (x-p.x0)^2 - (y-p.y0)^2 ) * tmp
-		γ2 = (x-p.x0)*(y-p.y0) * tmp
-		(γ1, γ2) .|> NoUnits
-	end
-	function calculate_γtx(p, x, y; Σcrit)
-		(γ1, γ2) = calculate_γ12(p, x, y; Σcrit=Σcrit)
-	
-		R = sqrt(x^2 + y^2)
-		cosφ = x/R
-		sinφ = y/R
-	
-		# Angle sum identities (or use Mathematica, Cos[2φ]//TrigReduce)
-		cos2φ = cosφ^2 - sinφ^2
-		sin2φ = 2*cosφ*sinφ
-	
-		γt = - cos2φ * γ1 - sin2φ * γ2
-		γx =   sin2φ * γ1 - cos2φ * γ2
-	
-		(γt, γx)
-	end
-	function calculate_κ(p::P, x, y; Σcrit) where P <:AbstractProfile
-		R = sqrt( (x-p.x0)^2 + (y-p.y0)^2 )
-		calculate_κ(p, R; Σcrit=Σcrit)
-	end
-	function calculate_azimuthally_averaged_gt(R, p; Σcritinv)
-		
-		Σcrit = 1/Σcritinv
-		
-		# 50 samples
-		# `end-1` to make sure 2π is not included (do not double-count φ = 0 = 2π)
-		# TODO: Make that depend on radius?? (constant source number density!)
-		φvals = LinRange(0, 2π, 50+1)[1:end-1] |> collect
-	
-		xvals = R .* cos.(φvals)
-		yvals = R .* sin.(φvals)
-	
-		# Get the (dimensionless) γ and κ
-		γtx = calculate_γtx.(Ref(p), xvals, yvals; Σcrit=Σcrit)
-		γt = map(x -> x[1], γtx)
-		γx = map(x -> x[2], γtx)
-		
-		κ = calculate_κ.(Ref(p), xvals, yvals; Σcrit=Σcrit)
-	
-		# Don't shoot ourselves in the foot
-		@assert all(κ .< .9) "Oups -- don't let κ be so big :) $(R) $(κ)"
-	
-		# Reduced shear
-		gt = γt ./ (1 .- κ)
-		gx = γx ./ (1 .- κ)
-	
-		# Azimuthal average
-		gt = sum(gt) / length(gt)
-		gx = sum(gx) / length(gx)
-	
-		@assert abs(gx) < 1e-15 "Cross-check: γx and gx should be zero"
-	
-		# Reduced tangential shear
-		gt
-	end
-	struct ProfileSIS <: AbstractProfile
-		M1Mpc::typeof(1.0u"Msun")
-		x0::typeof(1.0u"Mpc")
-		y0::typeof(1.0u"Mpc")
-	end
-	ProfileSIS(; M1Mpc, x0, y0) = ProfileSIS(
-		M1Mpc,
-		x0,
-		y0
-	)
-	function calculate_κ(p::ProfileSIS, R; Σcrit)
-		# ρ = M1Mpc/(4π*1Mpc*r^2)
-		# NB: κ= Σ/Σcrit -- but lens equations have factor of 2: Δ ϕ = 2 κ
-		a = p.M1Mpc/(4π*1u"Mpc") / Σcrit
-		a*π/R |> NoUnits
-	end
-	function calculate_dR_lenspot(p::ProfileSIS, R; Σcrit)
-		# ρ = M1Mpc/(4π*1Mpc*r^2)
-		a = p.M1Mpc/(4π*1u"Mpc")
-		
-		2π * a/Σcrit
-	end
-	function calculate_ddR_lenspot(p::ProfileSIS, R; Σcrit)
-		# ρ = M1Mpc/(4π*1Mpc*r^2)
-		prefactor = p.M1Mpc/(4π*1u"Mpc")/Σcrit
-		0*prefactor/1u"Mpc"
-	end
+	import Roots
 end
 
 # ╔═╡ 8f04c59b-a109-4032-9235-1acc6f8ad9b4
@@ -146,19 +44,33 @@ end
 
 # ╔═╡ 2bd8f9c4-ed93-406f-974e-3539d44f21c4
 @plutoonly let
+	import Cosmology # For NFW tests
+	using Plots
 	import PlutoUI
 	PlutoUI.TableOfContents()
 end
 
 # ╔═╡ 9269044a-217b-48ef-b6f1-266a75890956
 begin
+	# Mass-concentration relations for NFW extrapolation
+	abstract type AbstractMassConcentrationRelation end
+	struct CMRelationMaccio2008 <: AbstractMassConcentrationRelation
+		ρcrit::typeof(1.0u"Msun/Mpc^3")
+		h::Float64
+	end
+	
 	# How to extrapolate G beyond last data point
 	abstract type AbstractExtrapolate end
 	struct ExtrapolatePowerDecay <: AbstractExtrapolate
 		# Only positive values are allowed!
 		n::Float64
 	end
-
+	struct ExtrapolateNFW{
+		CM<:AbstractMassConcentrationRelation
+	} <: AbstractExtrapolate
+		cm::CM
+	end
+	
 	# Hot to interpolate G, Gf, f, in between the discrete data points
 	# NB: This also controls whether the integrals I(R) and J(R) are calculated from
 	#     ODEs of the form dI/dR = ... (for linear-spce) or from ODEs of the form 
@@ -654,58 +566,9 @@ Boundary condition:
   For later:
 
   $I(R \geq R_{\mathrm{max}}) = -\frac{2}{n} \ln\left(1 - Gf(R_{\mathrm{max}}) \left(\frac{R_{\mathrm{max}}}{R}\right)^n\right)$
-"""
 
-# ╔═╡ 3e5aa347-e19e-4107-a85e-30aa2515fb3a
-begin
-	function calculate_I_R∞(
-		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateR; RMpc, Gf
-	)
-		# Solve in terms of X = Rmax - R so we can impose I(RMax) as an *initial*
-		# condition (rather than a final condition). Because that's what `ODEProblem`
-		# wants
-		n = extrapolate.n
-		RMpcMax = maximum(RMpc)
-		RMpcMin = minimum(RMpc)
-		prob = ODEProblem(
-			(I, p, X) -> let
-				RMpc = RMpcMax - X
-				SA[(2/RMpc)*Gf(RMpc)/(1 - Gf(RMpc))] # RHS of I'(X) = ...
-			end,
-			SA[-(2/n)*log(1 - Gf(RMpcMax))], # Initial condition
-			(0, RMpcMax-RMpcMin) # R interval where to solve
-		)
-		s = solve(prob, Tsit5())
-		RMpc -> let
-			@assert RMpc <= RMpcMax "I(R) only calculated up to last bin center!"
-			s(RMpcMax - RMpc, idxs=1)
-		end
-	end
-	
-	function calculate_I_R∞(
-		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateLnR; RMpc, Gf
-	)
-		# Solve in terms of X=ln(Rmax)-ln(R) so we can impose I(RMax) as an *initial*
-		# condition (rather than a final condition). Because that's what `ODEProblem`
-		# wants
-		n = extrapolate.n
-		RMpcMax = maximum(RMpc)
-		RMpcMin = minimum(RMpc)
-		prob = ODEProblem(
-			(I, p, X) -> let
-				RMpc = RMpcMax*exp(-X) # same as exp(ln(Rmax) - X)
-				SA[2*Gf(RMpc)/(1 - Gf(RMpc))] # RHS of I'(X) = ... NB: no 1/RMpc
-			end,
-			SA[-(2/n)*log(1 - Gf(RMpcMax))], # Initial condition
-			(0, log(RMpcMax)-log(RMpcMin)) # R interval where to solve
-		)
-		s = solve(prob, Tsit5())
-		RMpc -> let
-			@assert RMpc <= RMpcMax "I(R) only calculated up to last bin center!"
-			s(log(RMpcMax/RMpc), idxs=1)
-		end
-	end
-end
+- For NFW extrapolation: Keep our lives simple: Just do the integral numerically.
+"""
 
 # ╔═╡ c8046b24-dfe7-4bf2-8787-b33d855e586f
 md"""
@@ -723,71 +586,34 @@ For ..
 - extrapolate $1/R^n$ (see Mathematica):
 
   $J(R_{\mathrm{max}}) = \frac{1}{f_\infty} \left((1 - Gf(R_{\mathrm{max}}))^{-\frac2n} - 1\right)$
+
+- For NFW extrapolate, we exploit that a) $J$ is related in a simple way to $\Delta \Sigma$ and 2) we _know_ the NFW parameters for the extrapolation so we _know_ $\Delta \Sigma$ and $G$ for the extraplation -- so we can just solve the following equation for $J$ algebraically (Eq. (B5) in Mistele&Durakovic 2024)
+
+  $\Delta \Sigma = \frac{1}{f_c} \frac{G f}{1 - G f} (1 - e^{-I} f_c J)$
+
+  with *everything* evaluated at $R = R_{\mathrm{max}}$. The result is:
+
+  $J = \frac{e^{+I} }{f_c} \left(1 - \frac{f \Delta \Sigma}{G f} (1 - G f) \right)$
+
+  This gives $J(R_{\mathrm{max}})$ with the RHS evaluated for the NFW continuation.
+  Using $G = \Delta \Sigma/(1 - f \Sigma)$ (approximately in the regime we're interested int), this becomes
+
+  $J = e^{+I} (\Delta \Sigma + \Sigma)$
+
+  For NFW, this is just (use $\Delta \Sigma = 2 \rho_s r_s(g + f)$)
+
+  $J(R_{\mathrm{max}}) = e^{I(R_{\mathrm{max}})} \cdot 2 \rho_s r_s g_{\mathrm{NFW}}\left(\frac{R_{\mathrm{max}}}{r_s}\right)$
 """
 
-# ╔═╡ 64e5f173-11be-4dbf-b9ab-f652c50d9c09
-begin
-	function calculate_J_R∞(
-		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateR;
-		RMpc::typeof([1.0]), Gf, Ĝ, I
-	)
-		# Solve in terms of X = Rmax - R so we can impose J(RMax) as an *initial*
-		# condition (rather than a final condition). Because that's what `ODEProblem`
-		# wants
-		n = extrapolate.n
-		RMpcMax = maximum(RMpc)
-		RMpcMin = minimum(RMpc)
-		f̂∞ = Gf(RMpcMax)/Ĝ(RMpcMax)
-		prob = ODEProblem(
-			(J, p, X) -> let
-				RMpc = RMpcMax - X
-				# RHS of I'(X) = ...
-				SA[(2/RMpc)*(1/exp(-I(RMpc)))*Ĝ(RMpc)/(1 - Gf(RMpc))]
-			end,
-			# Initial condition
-			SA[(1/f̂∞)*((1 - Gf(RMpcMax))^(-2/n) - 1)], 
-			(0, RMpcMax-RMpcMin) # R interval where to solve
-		)
-		s = solve(prob, Tsit5())
-		RMpc -> let
-			@assert RMpc <= RMpcMax "J(R) only calculated up to last bin center!"
-			s(RMpcMax - RMpc, idxs=1)
-		end
-	end
-	function calculate_J_R∞(
-		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateLnR;
-		RMpc::typeof([1.0]), Gf, Ĝ, I
-	)
-		# Solve in terms of X=ln(Rmax)-ln(R) so we can impose J(RMax) as an *initial*
-		# condition (rather than a final condition). Because that's what `ODEProblem`
-		# wants
-		n = extrapolate.n
-		RMpcMax = maximum(RMpc)
-		RMpcMin = minimum(RMpc)
-		f̂∞ = Gf(RMpcMax)/Ĝ(RMpcMax)
-		prob = ODEProblem(
-			(J, p, X) -> let
-				RMpc = RMpcMax*exp(-X) # same as exp(ln(Rmax) - X)
-				# RHS of I'(X) = ... NB: no 1/RMpc
-				SA[2*(1/exp(-I(RMpc)))*Ĝ(RMpc)/(1 - Gf(RMpc))]
-			end,
-			# Initial condition
-			SA[(1/f̂∞)*((1 - Gf(RMpcMax))^(-2/n) - 1)], 
-			(0, log(RMpcMax)-log(RMpcMin)) # R interval where to solve
-		)
-		s = solve(prob, Tsit5())
-		RMpc -> let
-			@assert RMpc <= RMpcMax "J(R) only calculated up to last bin center!"
-			s(log(RMpcMax) - log(RMpc), idxs=1)
-		end
-	end
-end
+# ╔═╡ fa01d0c3-f793-44a8-a406-776b77786aa9
+md"""
+## Interpolations
+"""
 
 # ╔═╡ 49397343-2023-4627-89e6-74170976c890
 begin
 	function get_interpolation_RMpc(
-		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateR;
-		RMpc::typeof([1.0]), values
+		interpolate::InterpolateR; RMpc::typeof([1.0]), values
 	)
 		func = BSplineKit.extrapolate(
 			BSplineKit.interpolate(
@@ -795,24 +621,22 @@ begin
 				# Linear interpolation = BSplineOrder(2), so +1
 				BSplineKit.BSplineOrder(interpolate.order+1)
 			),
-			# Just b/c of floating point inexactness. We don't actually need values 
-			# outside where they're defined
+			# Just because of floating point inexactness. We don't actually need
+			# values outside the range of RMpc. To avoid accidental mistakes,
+			# we actually enforce at the upper boundary. But at the lower boundary
+			# we don't and _sometimes_ that seems to be an issue in practice.
+			# (`interpolate` itself gives 0 outsides `RMpc`...)
 			BSplineKit.Flat()
 		)
 
 		maxRMpc = maximum(RMpc)
-		boundaryVal = func(maxRMpc)
-		n = extrapolate.n
-		RMpc -> if RMpc > maxRMpc
-			# Asymptotically we fall off as 1/R^n
-			boundaryVal * (maxRMpc/RMpc)^n
-		else
+		RMpc -> let
+			RMpc <= maxRMpc || throw("interpolation must be evaluated at <= maxRMpc")
 			func(RMpc)
 		end
 	end
 	function get_interpolation_RMpc(
-		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateLnR;
-		RMpc::typeof([1.0]), values
+		interpolate::InterpolateLnR; RMpc::typeof([1.0]), values
 	)
 		logfunc = BSplineKit.extrapolate(
 			BSplineKit.interpolate(
@@ -820,51 +644,19 @@ begin
 				# Linear interpolation = BSplineOrder(2), so +1
 				BSplineKit.BSplineOrder(interpolate.order+1)
 			),
-			# Just b/c of floating point inexactness. We don't actually need values 
-			# outside where they're defined
+			# See comment above for why
 			BSplineKit.Flat()
 		)
 
 		maxRMpc = maximum(RMpc)
-		boundaryVal = logfunc(log(maxRMpc))
-		n = extrapolate.n
-		RMpc -> if RMpc > maxRMpc
-			# Asymptotically we fall off as 1/R^n
-			boundaryVal * (maxRMpc/RMpc)^n
-		else
+		RMpc -> let
+			RMpc <= maxRMpc || throw("interpolation must be evaluated at <= maxRMpc")
 			logfunc(log(RMpc))
 		end
 	end	
-	function get_interpolation_RMpc_flat(
-		interpolate::InterpolateR;
-		RMpc::typeof([1.0]), values
-	)
-		BSplineKit.extrapolate(
-			BSplineKit.interpolate(
-				RMpc, values,
-				# Linear interpolation = BSplineOrder(2), so +1
-				BSplineKit.BSplineOrder(interpolate.order+1)
-			),
-			BSplineKit.Flat()
-		)
-	end
-	function get_interpolation_RMpc_flat(
-		interpolate::InterpolateLnR;
-		RMpc::typeof([1.0]), values
-	)
-		logfunc = BSplineKit.extrapolate(
-			BSplineKit.interpolate(
-				log.(RMpc), values,
-				# Linear interpolation = BSplineOrder(2), so +1
-				BSplineKit.BSplineOrder(interpolate.order+1)
-			),
-			BSplineKit.Flat()
-		)
-		RMpc -> logfunc(log(RMpc))
-	end
+
 	function get_interpolation_RMpc_dlog(
-		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateR;
-		RMpc::typeof([1.0]), values
+		interpolate::InterpolateR; RMpc::typeof([1.0]), values
 	)
 		func = BSplineKit.extrapolate(
 			BSplineKit.interpolate(
@@ -872,20 +664,18 @@ begin
 				# Linear interpolation = BSplineOrder(2), so +1
 				BSplineKit.BSplineOrder(interpolate.order+1)
 			),
-			# Just b/c of floating point inexactness. We don't actually need values 
-			# outside where they're defined
+			# See comment above
 			BSplineKit.Flat()
 		)
 		dfunc = BSplineKit.Derivative(1) * func
 		maxRMpc = maximum(RMpc)
 		RMpc -> let
-			@assert RMpc <= maxRMpc "Extrapolation of derivatives not implemented yet"
+			RMpc <= maxRMpc || throw("interpolation must be evaluated at <= maxRMpc")
 			RMpc*dfunc(RMpc)
 		end
 	end
 	function get_interpolation_RMpc_dlog(
-		extrapolate::ExtrapolatePowerDecay, interpolate::InterpolateLnR;
-		RMpc::typeof([1.0]), values
+		interpolate::InterpolateLnR; RMpc::typeof([1.0]), values
 	)
 		logfunc = BSplineKit.extrapolate(
 			BSplineKit.interpolate(
@@ -893,14 +683,13 @@ begin
 				# Linear interpolation = BSplineOrder(2), so +1
 				BSplineKit.BSplineOrder(interpolate.order+1)
 			),
-			# Just b/c of floating point inexactness. We don't actually need values 
-			# outside where they're defined
+			# See comment above
 			BSplineKit.Flat()
 		)
 		dlogfunc = BSplineKit.Derivative(1) * logfunc
 		maxRMpc = maximum(RMpc)
 		RMpc -> let
-			@assert RMpc <= maxRMpc "Extrapolation of derivatives not implemented yet"
+			RMpc <= maxRMpc || throw("interpolation must be evaluated at <= maxRMpc")
 			dlogfunc(log(RMpc))
 		end
 	end
@@ -918,6 +707,8 @@ md"""
 
 # ╔═╡ dfe40541-396b-485b-bcb6-d70730a24867
 md"""
+### Power decay tail
+
 The $\Delta \Sigma$ tail beyond $R = R_{\mathrm{max}}$is the *same* for both $f = \mathrm{\mathrm{const}}$ and $f \neq \mathrm{const}$.
 
 That's because we assume $f = f(R_{\mathrm{max}})$ at $R > R_{\mathrm{max}}$ even when $f$ is not constant.
@@ -958,11 +749,11 @@ So we can use the simpler $f = \mathrm{const}$ formulas to calculate the $g_{\ma
 
 # ╔═╡ c86ab391-86c3-44f8-b0b9-20fb70c4dc87
 function calculate_gobs_tail(
-	extrapolate::ExtrapolatePowerDecay; θlim, f∞, GfTail, rMpc, rMpcTail
+	extrapolate::ExtrapolatePowerDecay, pre; θlim, f∞, rMpc, rMpcTail
 )
 	n = extrapolate.n
 	rMpcMax = rMpcTail
-	Gfmax = GfTail
+	Gfmax = pre
 
 	if n == 1
 		(4*u"G"/f∞)*Gfmax*(rMpcMax/rMpc)*(
@@ -981,17 +772,491 @@ function calculate_gobs_tail(
 		# let's keep them for now.
 		ΔΣtail(rMpc) = (1/f∞)*Gfmax*(rMpcMax/rMpc)^n*(1 - Gfmax*(rMpcMax/rMpc)^n)^(2/n-1)
 
-		quadgk_result = 4*u"G*Msun/pc^2"*quadgk(
+		4*u"G*Msun/pc^2"*quadgk(
 			θ -> ΔΣtail(rMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
 			0, θlim
 		)[1] |> u"m/s^2"
 	end
 end
 
+# ╔═╡ fa506a97-1c00-488d-a4d1-18b878bc3640
+md"""
+### NFW tail
+
+Let's assume a fixed concentration-mass relation, say $c = c(M_{200})$.
+This implies we also know $r_s$ as a function of $M_{200}$.
+
+$r_s(M_{200}) \equiv \frac{r_{200}(M_{200})}{c(M_{200})}$ 
+
+Then, we can write the NFW $\Delta \Sigma$ as:
+
+$\Delta \Sigma_{\mathrm{NFW}} = \Delta \Sigma_{\mathrm{NFW}}(R|r_s(M_{200}), M_{200})$
+
+i.e. the NFW excess-surface density depends on only a single parameter, in this case $M_{200}$ (at a given projected radius $R$).
+
+Thus, we can now find an *NFW tail* in a very simple way from the *last measured data point* at $R_{\mathrm{max}}$. We just need to solve this equation
+
+$\Delta \Sigma(R_{\mathrm{max}})_{\mathrm{measured}} = \Delta \Sigma_{\mathrm{NFW}}(R_{\mathrm{max}}|r_s(M_{200}), M_{200})$
+
+for $M_{200}$. Or the same for our (approximate) formula $G = \Delta \Sigma/(1 - f_c \Sigma)$.
+"""
+
+# ╔═╡ 0134ff7b-b627-4016-9a4b-d686207111b3
+begin
+	fNFW(x) = if x < 1
+		(1/(1-x^2))*( -1 + (2/sqrt(1-x^2)) * atanh(sqrt( (1-x)/(1+x) )) )
+	elseif x == 1
+		1/3
+	else
+		(1/(x^2-1))*( 1 - (2/sqrt(x^2-1)) * atan(sqrt( (x-1)/(x+1) )) )
+	end
+
+	gNFW(x) = if x < 1
+		(2/x^2)*( (2/sqrt(1-x^2)) * atanh(sqrt( (1-x)/(1+x) )) + log(x/2) )
+	elseif x == 1
+		2*(1+log(1/2))
+	else
+		(2/x^2)*( (2/sqrt(x^2-1)) * atan(sqrt( (x-1)/(x+1) )) + log(x/2) )
+	end
+
+	# That's a job for AutoDiff -- so I don't have to put the long derivative
+	# expression here (but I did cross-check with Mathematica)
+	d_gNFW(x) = if x == 1
+		-(10/3)+log(16)
+	else
+		ForwardDiff.derivative(gNFW, x)
+	end
+
+	ΔΣ_NFW(R; rs, ρs) = 2*ρs*rs*(gNFW(R/rs) - fNFW(R/rs))
+	Σ_NFW(R; rs, ρs) = 2*ρs*rs*fNFW(R/rs)
+
+	Gf_NFW(R; rs, ρs, f∞) = (
+		f∞*ΔΣ_NFW(R; ρs, rs) |> NoUnits
+	) / (
+		# Without that `NoUnits`, ForwardDiff.jl isn't happy...
+		1 - (f∞*Σ_NFW(R; ρs, rs) |> NoUnits)
+	)
+	
+	# Simple continuity smoke test
+	@plutoonly let
+		@assert abs(fNFW(1.0)/fNFW(1.00001)  -1 ) < 1e-4
+		@assert abs(fNFW(1.0)/fNFW(0.99999)  -1 ) < 1e-4
+		@assert abs(gNFW(1.0)/gNFW(1.00001)  -1 ) < 1e-5
+		@assert abs(gNFW(1.0)/gNFW(0.99999)  -1 ) < 1e-5
+
+		# From Mathematica
+		@assert abs(d_gNFW(.1)/(-9.70774) - 1) < 1e-6
+		@assert abs(d_gNFW(1.1)/(-0.481767) - 1) < 1e-6
+		@assert d_gNFW(1.0) == -(10/3)+log(16)
+	end
+end
+
+# ╔═╡ 3e5aa347-e19e-4107-a85e-30aa2515fb3a
+begin
+	function I_R∞_tail(extrapolate::ExtrapolatePowerDecay, pre; RMpcMax)
+		# ∫ dR' ... from Rmax to ∞
+		GfTail = pre
+		n = extrapolate.n
+		-(2/n)*log(1 - GfTail)
+	end
+
+	function I_R∞_tail(extrapolate::ExtrapolateNFW, pre; RMpcMax)
+		# ∫ dR' ... from Rmax to ∞
+		(rs, ρs, f∞) = pre
+		quadgk(RMpc -> let
+			Gf = Gf_NFW(RMpc*u"Mpc"; rs, ρs, f∞)
+			(2/RMpc)*Gf/(1 - Gf)
+		end, RMpcMax, Inf)[1]
+	end
+	
+	function calculate_I_R∞(
+		extrapolate, interpolate::InterpolateR, pre; RMpc, Gf,
+	)
+		# Solve in terms of X = Rmax - R so we can impose I(RMax) as an *initial*
+		# condition (rather than a final condition). Because that's what `ODEProblem`
+		# wants
+		RMpcMax = maximum(RMpc)
+		RMpcMin = minimum(RMpc)
+		prob = ODEProblem(
+			# RHS of I'(X) = ...
+			(I, p, X) -> let
+				RMpc = RMpcMax - X
+				SA[(2/RMpc)*Gf(RMpc)/(1 - Gf(RMpc))]
+			end,
+			# Initial condition, i.e. ∫ dR' ... from Rmax to ∞
+			SA[I_R∞_tail(extrapolate, pre; RMpcMax)],
+			# R interval where to solve
+			(0, RMpcMax-RMpcMin)
+		)
+		s = solve(prob, Tsit5())
+		RMpc -> let
+			@assert RMpc <= RMpcMax "I(R) only calculated up to last bin center!"
+			s(RMpcMax - RMpc, idxs=1)
+		end
+	end
+	
+	function calculate_I_R∞(
+		extrapolate, interpolate::InterpolateLnR, pre; RMpc, Gf,
+	)
+		# Solve in terms of X=ln(Rmax)-ln(R) so we can impose I(RMax) as an *initial*
+		# condition (rather than a final condition). Because that's what `ODEProblem`
+		# wants
+		RMpcMax = maximum(RMpc)
+		RMpcMin = minimum(RMpc)
+		prob = ODEProblem(
+			# RHS of I'(X) = ... NB: no 1/RMpc
+			(I, p, X) -> let
+				RMpc = RMpcMax*exp(-X) # same as exp(ln(Rmax) - X)
+				SA[2*Gf(RMpc)/(1 - Gf(RMpc))] 
+			end,
+			# Initial condition
+			SA[I_R∞_tail(extrapolate, pre; RMpcMax)],
+			# R interval where to solve
+			(0, log(RMpcMax)-log(RMpcMin))
+		)
+		s = solve(prob, Tsit5())
+		RMpc -> let
+			@assert RMpc <= RMpcMax "I(R) only calculated up to last bin center!"
+			s(log(RMpcMax/RMpc), idxs=1)
+		end
+	end
+end
+
+# ╔═╡ 64e5f173-11be-4dbf-b9ab-f652c50d9c09
+begin
+	function J_R∞_tail(extrapolate::ExtrapolatePowerDecay, pre; RMpcMax, f̂∞, I)
+		# ∫ dR' ... from Rmax to ∞
+		GfTail = pre
+		n = extrapolate.n
+		(1/f̂∞)*((1 - GfTail)^(-2/n) - 1)
+	end
+
+	function J_R∞_tail(extrapolate::ExtrapolateNFW, pre; RMpcMax, f̂∞, I)
+		# ∫ dR' ... from Rmax to ∞
+		(rs, ρs, _) = pre
+		exp(I(RMpcMax))*2*ρs*rs*gNFW(RMpcMax*u"Mpc"/rs) / u"Msun/pc^2" |> NoUnits
+	end
+	
+	function calculate_J_R∞(
+		extrapolate, interpolate::InterpolateR, pre;
+		RMpc::typeof([1.0]), Gf, Ĝ, I
+	)
+		# Solve in terms of X = Rmax - R so we can impose J(RMax) as an *initial*
+		# condition (rather than a final condition). Because that's what `ODEProblem`
+		# wants
+		RMpcMax = maximum(RMpc)
+		RMpcMin = minimum(RMpc)
+		f̂∞ = Gf(RMpcMax)/Ĝ(RMpcMax)
+		prob = ODEProblem(
+			# RHS of I'(X) = ...
+			(J, p, X) -> let
+				RMpc = RMpcMax - X
+				SA[(2/RMpc)*(1/exp(-I(RMpc)))*Ĝ(RMpc)/(1 - Gf(RMpc))]
+			end,
+			# Initial condition
+			SA[J_R∞_tail(extrapolate, pre; RMpcMax, f̂∞, I)],
+			# R interval where to solve
+			(0, RMpcMax-RMpcMin)
+		)
+		s = solve(prob, Tsit5())
+		RMpc -> let
+			@assert RMpc <= RMpcMax "J(R) only calculated up to last bin center!"
+			s(RMpcMax - RMpc, idxs=1)
+		end
+	end
+	function calculate_J_R∞(
+		extrapolate, interpolate::InterpolateLnR, pre;
+		RMpc::typeof([1.0]), Gf, Ĝ, I
+	)
+		# Solve in terms of X=ln(Rmax)-ln(R) so we can impose J(RMax) as an *initial*
+		# condition (rather than a final condition). Because that's what `ODEProblem`
+		# wants
+		RMpcMax = maximum(RMpc)
+		RMpcMin = minimum(RMpc)
+		f̂∞ = Gf(RMpcMax)/Ĝ(RMpcMax)
+		prob = ODEProblem(
+			# RHS of I'(X) = ... NB: no 1/RMpc
+			(J, p, X) -> let
+				RMpc = RMpcMax*exp(-X) # same as exp(ln(Rmax) - X)
+				SA[2*(1/exp(-I(RMpc)))*Ĝ(RMpc)/(1 - Gf(RMpc))]
+			end,
+			# Initial condition
+			SA[J_R∞_tail(extrapolate, pre; RMpcMax, f̂∞, I)],
+			# R interval where to solve
+			(0, log(RMpcMax)-log(RMpcMin))
+		)
+		s = solve(prob, Tsit5())
+		RMpc -> let
+			@assert RMpc <= RMpcMax "J(R) only calculated up to last bin center!"
+			s(log(RMpcMax) - log(RMpc), idxs=1)
+		end
+	end
+end
+
+# ╔═╡ 6f593629-bd08-44ad-8941-54c95f131908
+function calculate_gobs_tail(
+	extrapolate::ExtrapolateNFW, pre; θlim, f∞, rMpc, rMpcTail
+)
+	(rs, ρs, _) = pre
+	4*u"G*Msun/pc^2"*quadgk(
+		θ -> ΔΣ_NFW(rMpc*u"Mpc"/sin(θ); ρs, rs)/u"Msun/pc^2" |> NoUnits,
+		0, θlim
+	)[1] |> u"m/s^2"
+end
+
+# ╔═╡ 3f004698-b952-462f-8824-5c78ab1e08ad
+module __demo
+	using Unitful
+	using UnitfulAstro
+	import ..gNFW, ..fNFW, ..d_gNFW
+
+	# This is copied from the demo code I wrote for the paper.
+	# Perhaps put the demo code properly into a sub-module or so here.
+	abstract type AbstractProfile end
+	function calculate_γ12(p::P, x, y; Σcrit) where P<:AbstractProfile
+		R = sqrt( (x-p.x0)^2 + (y-p.y0)^2 )
+		dϕ = calculate_dR_lenspot(p, R; Σcrit=Σcrit)
+		ddϕ = calculate_ddR_lenspot(p, R; Σcrit=Σcrit)
+		tmp = (R*ddϕ - dϕ)/R^3
+		
+		γ1 = .5 * ( (x-p.x0)^2 - (y-p.y0)^2 ) * tmp
+		γ2 = (x-p.x0)*(y-p.y0) * tmp
+		(γ1, γ2) .|> NoUnits
+	end
+	function calculate_γtx(p, x, y; Σcrit)
+		(γ1, γ2) = calculate_γ12(p, x, y; Σcrit=Σcrit)
+	
+		R = sqrt(x^2 + y^2)
+		cosφ = x/R
+		sinφ = y/R
+	
+		# Angle sum identities (or use Mathematica, Cos[2φ]//TrigReduce)
+		cos2φ = cosφ^2 - sinφ^2
+		sin2φ = 2*cosφ*sinφ
+	
+		γt = - cos2φ * γ1 - sin2φ * γ2
+		γx =   sin2φ * γ1 - cos2φ * γ2
+	
+		(γt, γx)
+	end
+	function calculate_κ(p::P, x, y; Σcrit) where P <:AbstractProfile
+		R = sqrt( (x-p.x0)^2 + (y-p.y0)^2 )
+		calculate_κ(p, R; Σcrit=Σcrit)
+	end
+	function calculate_azimuthally_averaged_gt(R, p; Σcritinv)
+		
+		Σcrit = 1/Σcritinv
+		
+		# 50 samples
+		# `end-1` to make sure 2π is not included (do not double-count φ = 0 = 2π)
+		# TODO: Make that depend on radius?? (constant source number density!)
+		φvals = LinRange(0, 2π, 50+1)[1:end-1] |> collect
+	
+		xvals = R .* cos.(φvals)
+		yvals = R .* sin.(φvals)
+	
+		# Get the (dimensionless) γ and κ
+		γtx = calculate_γtx.(Ref(p), xvals, yvals; Σcrit=Σcrit)
+		γt = map(x -> x[1], γtx)
+		γx = map(x -> x[2], γtx)
+		
+		κ = calculate_κ.(Ref(p), xvals, yvals; Σcrit=Σcrit)
+	
+		# Don't shoot ourselves in the foot
+		@assert all(κ .< .9) "Oups -- don't let κ be so big :) $(R) $(κ)"
+	
+		# Reduced shear
+		gt = γt ./ (1 .- κ)
+		gx = γx ./ (1 .- κ)
+	
+		# Azimuthal average
+		gt = sum(gt) / length(gt)
+		gx = sum(gx) / length(gx)
+	
+		@assert abs(gx) < 1e-13 "Cross-check: γx and gx should be zero"
+	
+		# Reduced tangential shear
+		gt
+	end
+	struct ProfileSIS <: AbstractProfile
+		M1Mpc::typeof(1.0u"Msun")
+		x0::typeof(1.0u"Mpc")
+		y0::typeof(1.0u"Mpc")
+	end
+	ProfileSIS(; M1Mpc, x0, y0) = ProfileSIS(
+		M1Mpc,
+		x0,
+		y0
+	)
+	function calculate_κ(p::ProfileSIS, R; Σcrit)
+		# ρ = M1Mpc/(4π*1Mpc*r^2)
+		# NB: κ= Σ/Σcrit -- but lens equations have factor of 2: Δ ϕ = 2 κ
+		a = p.M1Mpc/(4π*1u"Mpc") / Σcrit
+		a*π/R |> NoUnits
+	end
+	function calculate_dR_lenspot(p::ProfileSIS, R; Σcrit)
+		# ρ = M1Mpc/(4π*1Mpc*r^2)
+		a = p.M1Mpc/(4π*1u"Mpc")
+		
+		2π * a/Σcrit
+	end
+	function calculate_ddR_lenspot(p::ProfileSIS, R; Σcrit)
+		# ρ = M1Mpc/(4π*1Mpc*r^2)
+		prefactor = p.M1Mpc/(4π*1u"Mpc")/Σcrit
+		0*prefactor/1u"Mpc"
+	end
+
+	struct ProfileNFW <: AbstractProfile
+		ρ0::typeof(1.0u"Msun/Mpc^3")
+		rs::typeof(1.0u"Mpc")
+		x0::typeof(1.0u"Mpc")
+		y0::typeof(1.0u"Mpc")
+	end
+	ProfileNFW(; ρ0, rs, x0, y0) = ProfileNFW(
+		ρ0,
+		rs,
+		x0,
+		y0
+	)
+	function calculate_κ(p::ProfileNFW, R; Σcrit)
+		# NB: κ= Σ/Σcrit -- but lens equations have factor of 2: Δ ϕ = 2 κ
+		# Σ from Umetsu2020, Eq. (118)/(119)
+		x = R/p.rs
+		Σ = 2*p.ρ0*p.rs*fNFW(x)
+		Σ / Σcrit |> NoUnits
+	end
+	function calculate_dR_lenspot(p::ProfileNFW, R; Σcrit)
+		x = R/p.rs
+		Σ̄ = 2*p.ρ0*p.rs*gNFW(x)
+		(R/Σcrit) * Σ̄
+	end
+	function calculate_ddR_lenspot(p::ProfileNFW, R; Σcrit)
+		x = R/p.rs
+		(2*p.ρ0*p.rs/Σcrit) * (gNFW(x) + x * d_gNFW(x) )
+	end
+end
+
+# ╔═╡ d872bd18-384e-42cd-9979-be72f8e82b05
+const Gf_NFW_approx_miscentering_applied = let
+
+	# That's a helper function defined as
+	#   H(lnx; p) = p*(g - f)/(1 - p * f)
+	# Compare:
+	#   Gf_NFW(R) = fc*(2rsρs)*(g(x=r/Rs) - f(...))/(1 - f_c * (2rsρs) * f(...))
+	# So we have:
+	#   Gf_NFW(R) = H(ln(R/rs); p=f_c*2rsρs)
+	H(lnx; p) = let
+		x = exp(lnx)
+		p*(gNFW(x) - fNFW(x)) / (1 - p*fNFW(x))
+	end
+	dH(lnx; p) = ForwardDiff.derivative(lny -> H(lny; p), lnx)
+	d²H(lnx; p) = ForwardDiff.derivative(lny -> dH(lny; p), lnx)
+
+	# This is:
+	#  (G₊_tail - ϵ² D G₊_tail)(R)
+	# with ϵ = Rmc/Rmax and (D F)(R) ≡ (1/4) * (4F(R) - R F'(R) - R² F''(R))	
+	# Note that D can be written as
+	#   DF(R) = (1/4) * (4F - ∂²_(ln R) F)
+	# And note ∂²_(ln R) ... = ∂²_(ln (R/rs)) ...
+	# Instaed of removing miscentering using our O(ϵ²) formula,we're applying it.
+	(
+		R; Rmc², rs, ρs, f∞
+	) -> let
+		Gf = Gf_NFW(R; rs, ρs, f∞)
+
+		fc2rsρs = f∞*2*rs*ρs |> NoUnits
+		∂_terms = d²H(log(R/rs); p=fc2rsρs)
+
+		Gf - (1/4) * (Rmc²/R^2) * (4*Gf - ∂_terms)
+	end
+end
+
+# ╔═╡ ae4b04aa-f4a2-4060-89a6-211eb40a1808
+@plutoonly let
+	# Simple checks against Mathematica of applying miscentering to NFW
+	
+	test1 = Gf_NFW_approx_miscentering_applied(
+		1.0u"Mpc";
+		Rmc²=(.2u"Mpc")^2, rs=.5u"Mpc", ρs=1e14u"Msun/Mpc^3", f∞=1e-3/u"Msun/pc^2"
+	)
+	# From Mathematica (didn't use the ln(R) form to cross-check that)
+	@assert abs(test1/0.0166537 - 1) < 1e-5
+
+	test2 = Gf_NFW_approx_miscentering_applied(
+		1.0u"Mpc";
+		Rmc²=(.2u"Mpc")^2, rs=1.0u"Mpc", ρs=1e14u"Msun/Mpc^3", f∞=1e-3/u"Msun/pc^2"
+	)
+	# From Mathematica at rs=R, where things are tricky
+	@assert abs(test2/0.0577428-1) < 2e-3
+end
+
+# ╔═╡ f42c2a3a-ac7f-45cd-84dc-8eccd147ccab
+const NFW_find_rs_ρs_from_last_Gf = let
+
+	# M200 concentration relation from Maccio et al 2008, WMAP5
+	# (formulas taken from LI et al 2020 Eq. (28) and Eq. (29))
+	# NOTE: There is a typo in Li (it's a + b not a - b!)
+	c200_from_M200 = let
+		a = 0.830
+		b = -0.098
+		M0 = 1e12u"Msun"
+		(cm::CMRelationMaccio2008, M200) -> 10^(a + b*log10(M200*cm.h/M0))
+	end
+
+	r200_from_M200(M200; ρcrit) = cbrt( M200 / ((4π/3)*200*ρcrit) ) |> u"Mpc"
+
+	function ρs_from_M200_c200_rs(; M200, c200, rs)
+		# From Wikipedia
+		# M200 = 4π ρs rs^3 [ln(1+c200) - c200/(1+c200)]
+		# So:
+		# ρs = (M200/4πrs^3) * 1/[ln(1+c200) - c200/(1+c200)]
+		(M200/(4π*rs^3)) / ( log(1+c200) - c200/(1+c200) ) |> u"Msun/Mpc^3"
+	end
+
+	function(cm::CM; Gf_NFW_func, GfTail, Rtail) where {
+		CM <: AbstractMassConcentrationRelation
+	}
+		# Find M200 from ΔΣ_NFW(Rmax|M200) = ΔΣ_measured(Rmax)
+		get_rs_ρs = M200 -> let
+			# Use c-M relation
+			c200 = c200_from_M200(cm, M200)
+			# Definitions of r200, rs, ρs (need cosmology in terms of ρcrit)
+			r200 = r200_from_M200(M200; cm.ρcrit)
+			rs = r200/c200
+			ρs = ρs_from_M200_c200_rs(; M200, c200, rs)
+			(rs, ρs)
+		end
+		log10_M200_matched = Roots.find_zero(
+			log10_M200 -> let
+				(rs, ρs) = get_rs_ρs(10 ^ log10_M200 * u"Msun")
+				Gf_NFW_tail = Gf_NFW_func(Rtail; ρs, rs)
+				Gf_NFW_tail > 0 || return 100.0 # Something larger than 1
+				Gf_NFW_tail < 1 || return 10.0 
+				Gf_NFW_tail  - GfTail
+			end,
+			(10, 17), # (10^10 -- 10^17) Msun should cover everything realistic
+			# Roots.Bisection() gives all-zeros for ForwardDiff! So use A42...
+			# https://discourse.julialang.org/t/autodiff-ing-a-function-defined-by-the-result-of-roots-find-zero-fails/87753/3
+			Roots.A42()
+		)
+
+		get_rs_ρs(10 ^ log10_M200_matched * u"Msun")
+	end
+
+	# TODO: How to handle negative last ΔΣ data point?
+	# TODO: How to handle unrealistic (fluctuated) last ΔΣ data point?
+
+end
+
+# ╔═╡ ea9fc39e-ba29-4502-927f-d2ca77e3b4e7
+md"""
+### Bulk/$g_{\mathrm{obs}}$ itself
+"""
+
 # ╔═╡ c449a9c8-1739-481f-87d5-982532c2955c
 begin
 	# The tail needs to be calculated analytically. Reason: The tail goes to R -> ∞.
-	# That's ok for Gf(R) and f(R) because those we just extrapolate. But it's not ok
+	# That's ok for Gf(R) and f(R) because we could just extrapolate. But it's not ok
 	# for I(R) and J(R) which also enter ΔΣ(R), because those we solved numerically
 	# only up to R=Rmax (and the `ODESolution` extrapolation beyond last data point
 	# is often completely off).
@@ -999,11 +1264,11 @@ begin
 	function calculate_gobs_from_ΔΣ(
 		extrapolate::E,
 		interpolate::I,
-		::Union{MiscenterCorrectNone, MiscenterCorrectSmallRmcPreprocessG};
-		ΔΣ, rMpc, f∞, Gf, Ĝvalues,
+		::Union{MiscenterCorrectNone, MiscenterCorrectSmallRmcPreprocessG},
+		pre;
+		ΔΣ, rMpc, f∞, Ĝvalues,
 	) where {E<:AbstractExtrapolate, I<:AbstractInterpolate}
 		rMpcTail = maximum(rMpc)
-		GfTail = Gf(rMpcTail)
 	
 		gobs(rMpc) = if rMpc < rMpcTail
 			θlim = asin(rMpc/rMpcTail)
@@ -1011,29 +1276,26 @@ begin
 				θ -> ΔΣ(rMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
 				θlim, π/2
 			)[1] |> u"m/s^2"
-			tail = calculate_gobs_tail(extrapolate; θlim, f∞, GfTail, rMpc, rMpcTail)
+			tail = calculate_gobs_tail(extrapolate, pre; θlim, f∞, rMpc, rMpcTail)
 			bulk + tail
 		else
-			calculate_gobs_tail(extrapolate; θlim=π/2, f∞, GfTail, rMpc, rMpcTail)
+			calculate_gobs_tail(extrapolate, pre; θlim=π/2, f∞, rMpc, rMpcTail)
 		end
 	end
 	
 	function calculate_gobs_from_ΔΣ(
-		extrapolate::ExtrapolatePowerDecay,
+		extrapolate::Union{ExtrapolatePowerDecay, ExtrapolateNFW},
 		interpolate::I,
-		miscenter_correct::MiscenterCorrectSmallRmc;
-		ΔΣ, rMpc, f∞, Gf, Ĝvalues,
+		miscenter_correct::MiscenterCorrectSmallRmc,
+		pre;
+		ΔΣ, rMpc, f∞, Ĝvalues,
 	) where I <: AbstractInterpolate
 		Rmc²Mpc = miscenter_correct.Rmc² / u"Mpc^2" |> NoUnits
 		ΔΣ̂(RMpc) = ΔΣ(RMpc)/u"Msun/pc^2" |> NoUnits
 		
 		rMpcTail = maximum(rMpc)
-		GfTail = Gf(rMpcTail)
 
-		dlog_Ĝ = get_interpolation_RMpc_dlog(
-			extrapolate, interpolate;
-			RMpc=rMpc, values=Ĝvalues
-		)
+		dlog_Ĝ = get_interpolation_RMpc_dlog(interpolate; RMpc=rMpc, values=Ĝvalues)
 
 		# For linear interpolation, these 
 		# are discontinuous! That's however not a problem -- as long as we have this 
@@ -1057,20 +1319,29 @@ begin
 			@assert !any(abs.(dlog_Ĝ.(myrMpc) .- dlog_Ĝ.(myrMpcSmaller)) .< 1e-12)
 		end
 		interpolate.order == 1 && __makesure_interpolation_ok(interpolate)
-		
-		# For the tail, it's easiest to do the miscentering correction directly
-		# on Gf(Rmax) in the naive (no fancy integration by parts or whatever) way.
-		# That's not a problem b/c the tail is analytical and so we know 1st/2nd
-		# order derivatives exactly, no numerics issues.
+
+		# Basically, what we do is
+		#  M ~ ∫dθ (ΔΣ_obs + ϵ² DΔΣ_obs)|R=r/sin θ
+		# Which we split into a bulk and a tail.
+		#  M ~ ∫_(R < Rmax) (ΔΣ_obs + ϵ² DΔΣ_obs)|R=r/sin θ
+		#     + ∫_(R > Rmax) (ΔΣ_obs + ϵ² DΔΣ_obs)|R=r/sin θ
+		# The split is why we need boundary terms below in the bulk integral
+		# (the derivation has integration by parts which gives the boundary terms)!
 		#
-		# Note: The assumption of 1/R^n decay applies to the _corrected_ G+. But
-		#       this formula is derived by assuming the _uncorrected_ G+ is 1/R^n.
-		#       But: This is actually okay b/c G_+^0 = G_+ + ϵ^2 (G_+ + ...) which
-		#       means that -- to order ϵ^2 -- I can also just do G_+^0 = G_+ + ϵ^2
-		#       (G_+^0 + ...) (where ϵ = Rmc/R). Aka the difference between using
-		#       G_+ and G_+^0 for the miscentering correction formula is of higher
-		#       order in ϵ
-		GfTail = GfTail + (1/4)*(Rmc²Mpc/rMpcTail^2)*GfTail*(4-extrapolate.n^2)
+		# For the tail: We can just use the *same* formulas as without miscentering
+		# correction. After all, The assumption we make (e.g. NFW tail) is on the
+		# *miscentering-corrected* / *original* shear profile
+		#
+		# So, for NFW for example:
+		#  M ~ ∫_(R < Rmax) (ΔΣ_obs + ϵ² DΔΣ_obs)|R=r/sin θ
+		#     + ∫_(R > Rmax) (ΔΣ_NFW)|R=r/sin θ
+		# 
+		# So that's easy. We only need to be careful when *matching* the NFW tail
+		# to the last measured data point that the observed data is miscentered,
+		# while the NFW tail isn't. So in that matching we need to take that into
+		# account.
+		# That's done in `precompute(..)`.
+		# Here, we don't need to worry about the tail at all.
 
 		ΔΣ̂_integrand = (rMpc, θ) -> let
 			RMpc = rMpc/sin(θ)
@@ -1124,11 +1395,11 @@ begin
 				) |> u"m/s^2"
 			end
 			
-			tail = calculate_gobs_tail(extrapolate; θlim, f∞, GfTail, rMpc, rMpcTail)
+			tail = calculate_gobs_tail(extrapolate, pre; θlim, f∞, rMpc, rMpcTail)
 			
 			bulk + boundary + tail
 		else
-			calculate_gobs_tail(extrapolate; θlim=π/2, f∞, GfTail, rMpc, rMpcTail)
+			calculate_gobs_tail(extrapolate, pre; θlim=π/2, f∞, rMpc, rMpcTail)
 		end
 	end
 end
@@ -1137,6 +1408,79 @@ end
 md"""
 ## $\Delta \Sigma$ and more from $G_+$
 """
+
+# ╔═╡ df868364-b8c4-47f8-8f8f-860698b448b3
+begin
+	# Generic mechanism to pre-calculate something that is then passed to I/J
+	# integral computation, and to gobs computation. Currently used to precompute
+	# the parameters for the extrapolation/tail.
+	
+	function precompute(
+		::ExtrapolatePowerDecay,
+		::Union{MiscenterCorrectNone,MiscenterCorrectSmallRmcPreprocessG};
+		RMpc, f∞, Gf
+	)
+		# Save the last Gf data point, which is the pre-factor for the 
+		# G₊_tail ~ A * (Rmax/R)^n decay we assume.
+		Gf(maximum(RMpc))
+	end
+
+	# Matching formula is (see `miscentering-correct-efficient-evaluation.typ`):
+	#  G₊_observed (Rmax) = (G₊_tail - ϵ² D G₊_tail) (Rmax)
+	# with ϵ = Rmc/Rmax and (D F)(R) ≡ (1/4) * (F(R) - R F'(R) - R² F''(R))
+	# Our assumption here is G₊_tail ~ A (Rmax/R)^n after Rmax (NB: not ΔΣ_tail
+	# ~ 1/R^n). This translates into
+	#  G₊_observed (Rmax) = A (1 - ϵ² * (1/4) * (4 - n²))
+	# Solving for A and expanding to order ϵ²
+	#  A = G₊_observed(Rmax) ( 1 + ϵ² * (1/4) * (4 - n²) )
+	function precompute(
+		extrapolate::ExtrapolatePowerDecay,
+		miscenter_correct::MiscenterCorrectSmallRmc;
+		RMpc, f∞, Gf
+	)
+		n = extrapolate.n
+		RMpcMax = maximum(RMpc)
+		Rmc²Mpc = miscenter_correct.Rmc² / u"Mpc^2" |> NoUnits
+		
+		Gf(RMpcMax)*(1 + (1/4) * (Rmc²Mpc/RMpcMax^2)*(4-n^2))
+	end
+	
+	function precompute(
+		extrapolate::ExtrapolateNFW,
+		::Union{MiscenterCorrectNone,MiscenterCorrectSmallRmcPreprocessG};
+		RMpc, f∞, Gf
+	)
+		RMpcMax = maximum(RMpc)
+		(rs, ρs) = NFW_find_rs_ρs_from_last_Gf(
+			extrapolate.cm;
+			Gf_NFW_func=(R; rs, ρs) -> Gf_NFW(R; rs, ρs, f∞),
+			GfTail=Gf(RMpcMax),
+			Rtail=RMpcMax*u"Mpc"
+		)
+		(rs, ρs, f∞)
+	end
+
+	# Matching formula is (see `miscentering-correct-efficient-evaluation.typ`):
+	#  G₊_observed (Rmax) = (G₊_tail - ϵ² D G₊_tail) (Rmax)
+	# with ϵ = Rmc/Rmax and (D F)(R) ≡ (1/4) * (F(R) - R F'(R) - R² F''(R))	
+	function precompute(
+		extrapolate::ExtrapolateNFW,
+		miscenter_correct::MiscenterCorrectSmallRmc;
+		RMpc, f∞, Gf
+	)
+		RMpcMax = maximum(RMpc)
+		Rmc² = miscenter_correct.Rmc²
+		(rs, ρs) = NFW_find_rs_ρs_from_last_Gf(
+			extrapolate.cm;
+			Gf_NFW_func=(R; rs, ρs) -> Gf_NFW_approx_miscentering_applied(
+				R; Rmc², rs, ρs, f∞
+			),
+			GfTail=Gf(RMpcMax),
+			Rtail=RMpcMax*u"Mpc"
+		)
+		(rs, ρs, f∞)
+	end
+end
 
 # ╔═╡ 18dccd90-f99f-11ee-1bf6-f1ca60e4fcd0
 begin
@@ -1163,19 +1507,11 @@ begin
 		@assert !any(G .* f .>= 1.0) "G*f must be < 1"
 	
 		RMpc = R ./ u"Mpc"
-		Gf_unchecked = get_interpolation_RMpc(
-			extrapolate, interpolate;
-			RMpc, values=G .* f
-		)
 		Ĝvalues = G ./ u"Msun/pc^2"
-		Ĝ = get_interpolation_RMpc(
-			extrapolate, interpolate;
-			RMpc, values=Ĝvalues
-		)
-		f̂ = get_interpolation_RMpc_flat(
-			interpolate;
-			RMpc, values=f .* u"Msun/pc^2"
-		)
+		Gf_unchecked = get_interpolation_RMpc(interpolate; RMpc, values=G .* f)
+		Ĝ = get_interpolation_RMpc(interpolate; RMpc, values=Ĝvalues)
+		f̂ = get_interpolation_RMpc(interpolate; RMpc, values=f .* u"Msun/pc^2")
+		
 		# Make sure that the interpolated Gf is not larger than 1.
 		# Can happen with e.g. quadratic interpolation despite us having checked that
 		# G .* f .< 1.0 holds.
@@ -1189,16 +1525,18 @@ begin
 			Gf_unchecked
 		end
 
-		IR∞ = calculate_I_R∞(extrapolate, interpolate; RMpc, Gf)
-		JR∞ = calculate_J_R∞(extrapolate, interpolate; RMpc, Gf, Ĝ, I=IR∞)
+		f∞ = f[end]
+		pre = precompute(extrapolate, miscenter_correct; RMpc, f∞, Gf)
+		IR∞ = calculate_I_R∞(extrapolate, interpolate, pre; RMpc, Gf)
+		JR∞ = calculate_J_R∞(extrapolate, interpolate, pre; RMpc, Gf, Ĝ, I=IR∞)
 
 		ΔΣ(RMpc) = (u"Msun/pc^2")*(Ĝ(RMpc)/(1 - Gf(RMpc)))*(
 			1 - exp(-IR∞(RMpc))*f̂(RMpc)*JR∞(RMpc)
 		)
 
 		from_ΔΣ_function(
-			extrapolate, interpolate, miscenter_correct;
-			ΔΣ, Gf, rMpc=RMpc, f∞=f[end], Ĝvalues,
+			extrapolate, interpolate, miscenter_correct, pre;
+			ΔΣ, rMpc=RMpc, f∞, Ĝvalues,
 		)
 	end
 	
@@ -1225,10 +1563,7 @@ begin
 		@assert !any(G .* f .>= 1.0) "G*f must be < 1"
 		
 		RMpc = R ./ u"Mpc"
-		Gf_unchecked = get_interpolation_RMpc(
-			extrapolate, interpolate;
-			RMpc, values=G .* f
-		)
+		Gf_unchecked = get_interpolation_RMpc(interpolate; RMpc, values=G .* f)
 		
 		# Make sure that the interpolated Gf is not larger than 1.
 		# Can happen with e.g. quadratic interpolation despite us having checked that
@@ -1243,12 +1578,14 @@ begin
 			Gf_unchecked
 		end
 
-		IR∞ = calculate_I_R∞(extrapolate, interpolate; RMpc, Gf)
+		f∞ = f
+		pre = precompute(extrapolate, miscenter_correct; RMpc, f∞, Gf)
+		IR∞ = calculate_I_R∞(extrapolate, interpolate, pre; RMpc, Gf)
 		ΔΣ(RMpc) = (1/f)*(Gf(RMpc)/(1 - Gf(RMpc)))*exp(-IR∞(RMpc))
 
 		from_ΔΣ_function(
-			extrapolate, interpolate, miscenter_correct;
-			ΔΣ, Gf, rMpc=RMpc, f∞=f, Ĝvalues=G ./ u"Msun/pc^2",
+			extrapolate, interpolate, miscenter_correct, pre;
+			ΔΣ, rMpc=RMpc, f∞, Ĝvalues=G ./ u"Msun/pc^2",
 		)
 	end
 
@@ -1726,6 +2063,333 @@ end
 # ╔═╡ dd9afde0-ea99-41c5-8b86-da1c91a09fc4
 @plutoonly test_reconstruction_SIS(logRMpc_bin_width=.12, interpolate=InterpolateR(2))
 
+# ╔═╡ 044926fb-bdf1-4221-905e-de2c04946709
+md"""
+## NFW extrapolation
+"""
+
+# ╔═╡ 81c1fde2-c7fa-456b-b720-52f0358ffa27
+@plutoonly let
+	# Test: NFW reconstruction
+
+	cosmo = Cosmology.cosmology(h=.7, OmegaM=.3)
+	zl = .3
+	H = Cosmology.H(cosmo, zl)
+	ρcrit = 3*H^2/(8π*u"G") |> u"Msun/Mpc^3"
+	nfw = let
+		cm = CMRelationMaccio2008(ρcrit, cosmo.h) 
+		ExtrapolateNFW(cm)
+	end
+	
+	# Choose ρ0 / rs that matches mass-concentration relation below
+	M200 = 1e15u"Msun"
+	# According to Maccio et al that's (Li2020 formulas with sign fixed)
+	c200 = 10^(.83 - .098*log10(M200*cosmo.h/(1e12u"Msun")) )
+	r200 = ( M200 / ( (4π/3) * 200 * ρcrit))^(1/3)
+	rs = r200/c200
+	ρ0 = M200/(4π*rs^3)/(log(1+c200) - c200/(1+c200))
+	
+	p = __demo.ProfileNFW(; ρ0, rs, x0=.0u"Mpc", y0=.0u"Mpc")
+	Σcrit=2500u"Msun/pc^2"
+	Gt = R -> __demo.calculate_azimuthally_averaged_gt(R, p; Σcritinv=1/Σcrit) * Σcrit
+
+	# Mass we reconstruct from shear
+	R = (.2:.04:10 |> collect) .* u"Mpc"
+	G = Gt.(R)
+	f = 1/Σcrit
+	M_reconstructed = extrapolate -> calculate_gobs(;
+		G, f, R,
+		interpolate=InterpolateLnR(2),
+		extrapolate=extrapolate
+	).(R ./ u"Mpc") .* (R .^ 2) ./ u"G" .|> u"Msun"
+
+	# Actual mass
+	MNFW(r) = 4π*p.ρ0*p.rs^3*(log(1 + r/p.rs)  - 1/(1 + p.rs/r))
+
+	power1 = ExtrapolatePowerDecay(1)
+	power2 = ExtrapolatePowerDecay(2)
+	plot(R,
+		 M_reconstructed(power1) ./ MNFW.(R),
+		 c=:gray, ls=:dash, label="reconstructed 1/R extrapolate")
+	plot!(R,
+		  M_reconstructed(power2) ./ MNFW.(R),
+		  c=:gray, ls=:dash, label="reconstruted 1/R² extrapolate")
+
+	# Find the actual underlying M200
+	let
+		check_r200 = Roots.find_zero(
+			r200-> MNFW(r200)-(4π/3)*r200^3*200*ρcrit,
+			(.1u"Mpc", 3u"Mpc")
+		)
+		check_M200 = MNFW(check_r200)
+		check_c200 = check_r200/p.rs
+
+		# Check that the MNFW profile we did actually _has_ the M200 we think it has
+		# (doesn't check the mass reconstruction, just self-consistency)
+		@assert abs(M200/check_M200 - 1) < 1e-15
+		@assert abs(r200/check_r200 - 1) < 1e-15
+		@assert abs(c200/check_c200 - 1) < 1e-15
+
+		# Check the (rs, ρs) parameters. They _should_ be pretty good given we
+		# make NFW without noise here.
+		@info "underlying params" p.rs p.ρ0 M200 c200
+		(check_rs, check_ρs) = NFW_find_rs_ρs_from_last_Gf(
+			nfw.cm; GfTail=G[end]*f, Rtail=maximum(R),
+			Gf_NFW_func=(R; rs, ρs) -> Gf_NFW(R; rs, ρs, f∞=f)
+		)
+		@info "matched params from last Gf data point" (check_rs, check_ρs)
+		@assert abs(check_rs/p.rs - 1) < 1e-15
+	end
+
+	let
+		# We should be good at "small" radii with SIS extrapolation
+		sel = R .< 3u"Mpc" # Regime where extrapolation plays no role
+		@assert all(abs.(M_reconstructed(power1) ./ MNFW.(R) .- 1)[sel] .< 5e-3)
+		
+		# We should be perfect at *all* radii with NFW extrapolation
+		@assert all(abs.(M_reconstructed(nfw) ./ MNFW.(R) .- 1) .< 1e-3)
+
+		# non-const f version (with J integral) should give ~same result
+		M_nonconst_f = calculate_gobs(;
+			G, f=ones(length(R)) .* f, R,
+			interpolate=InterpolateLnR(2),
+			extrapolate=nfw
+		).(R ./ u"Mpc") .* (R .^ 2) ./ u"G" .|> u"Msun"
+		@assert all(abs.(M_nonconst_f ./ M_reconstructed(nfw) .- 1) .< 1e-4)
+	end
+	
+	plot!(R,
+		  M_reconstructed(nfw) ./ MNFW.(R),
+		  c=1, ls=:dash, label="reconstruted NFW extrapolate")
+	
+	plot!(xscale=:log10, ylabel="M_reconstructed/M_true")
+end
+
+# ╔═╡ 072cf58f-902f-4ca8-aec2-be425f3ad547
+@plutoonly let
+	# Super-simple smoke test to check that ForwardDiff works with ExtrapolateNFW
+	cosmo = Cosmology.cosmology(h=.7, OmegaM=.3)
+	zl = .3
+	H = Cosmology.H(cosmo, zl)
+	ρcrit = 3*H^2/(8π*u"G") |> u"Msun/Mpc^3"
+	nfw = let
+		cm = CMRelationMaccio2008(ρcrit, cosmo.h) 
+		ExtrapolateNFW(cm)
+	end
+	res = calculate_gobs_and_covariance_in_bins(
+		R=[.2, .5, .7] .* u"Mpc",
+		G=[.3, .2, .1] .* u"Msun/pc^2",
+		# 10% uncertainty on G
+		G_covariance=diagm((.1 .* [.3, .2, .1] .* u"Msun/pc^2") .^ 2),
+		f=.9 ./ u"Msun/pc^2",
+		extrapolate=nfw,
+		interpolate=InterpolateLnR(1),
+	)
+
+	# Should give (very roughly) 10% uncertainty on gobs
+	@info "Relative uncertainty" res.gobs_stat_err ./ res.gobs
+	@assert abs(res.gobs_stat_err[end] / res.gobs[end] - 0.1) < 1e-2
+end
+
+# ╔═╡ f1d226a2-4bc0-4b31-a2e8-92540a9e53d5
+@plutoonly function do_NFW_miscentering_test(;Σcritfactor, interpolate, do_asserts)
+	# Test: Miscentering correction correctly corrects
+
+	cosmo = Cosmology.cosmology(h=.7, OmegaM=.3)
+	zl = .3
+	H = Cosmology.H(cosmo, zl)
+	ρcrit = 3*H^2/(8π*u"G") |> u"Msun/Mpc^3"
+	nfw = let
+		cm = CMRelationMaccio2008(ρcrit, cosmo.h) 
+		ExtrapolateNFW(cm)
+	end
+	
+	# Choose ρ0 / rs that matches mass-concentration relation below
+	M200 = 1e15u"Msun"
+	# According to Maccio et al that's (Li2020 formulas with sign fixed)
+	c200 = 10^(.83 - .098*log10(M200*cosmo.h/(1e12u"Msun")) )
+	r200 = ( M200 / ( (4π/3) * 200 * ρcrit))^(1/3)
+	rs = r200/c200
+	ρ0 = M200/(4π*rs^3)/(log(1+c200) - c200/(1+c200))
+		
+	p_original = __demo.ProfileNFW(
+		ρ0=ρ0,
+		rs=rs,
+		x0=0u"Mpc", # Centered
+		y0=0u"Mpc",
+	)
+	p_miscentered = __demo.ProfileNFW(
+		ρ0=ρ0,
+		rs=rs,
+		x0=.16u"Mpc", # Not centered
+		y0=0u"Mpc",
+	)
+	Σcrit = Σcritfactor*3000u"Msun/pc^2"
+
+	R = collect(.4:.01:3.0) .* u"Mpc"
+
+	calc_gobs = (p, miscenter_correct) -> let 
+		gt = __demo.calculate_azimuthally_averaged_gt.(R, Ref(p); Σcritinv=1/Σcrit)
+		f = 1/Σcrit
+		G = gt*Σcrit
+		res = calculate_gobs_and_covariance_in_bins(
+			R=R, G=G, f=f,
+			G_covariance=zeros(length(R), length(R)) .* u"(Msun/pc^2)^2",
+			interpolate=interpolate,
+			extrapolate=nfw,
+			miscenter_correct=miscenter_correct
+		)
+
+		(res.gobs, res.gobs_stat_err)
+	end
+
+	(gobs_centered, _) = calc_gobs(p_original, MiscenterCorrectNone())
+	(gobs_uncorrected, _) = calc_gobs(p_miscentered, MiscenterCorrectNone())
+	(gobs_corrected1, gobs_corrected1_stat_err) = calc_gobs(
+		p_miscentered,
+		MiscenterCorrectSmallRmcPreprocessG(
+			# Correct by the actual Rmc
+			Rmc²=(.16u"Mpc")^2,
+			# For later: use (uncertainty of Rmc^2) = Rmc^2
+			σ_Rmc²=(.16u"Mpc")^2
+		)
+	)
+	(gobs_corrected2, gobs_corrected2_stat_err) = calc_gobs(
+		p_miscentered,
+		MiscenterCorrectSmallRmc(
+			# Correct by the actual Rmc
+			Rmc²=(.16u"Mpc")^2,
+			# For later: use (uncertainty of Rmc^2) = Rmc^2
+			σ_Rmc²=(.16u"Mpc")^2
+		)
+	)
+
+	let
+		# Check the reconstructed rs/ρs parameters:
+		# - _should_ be off when not applying miscentering corrections
+		# - should _not_ be off using miscentering correction
+		
+		myR = R[R .< .7u"Mpc"] # Do it at Rmax=.7Mpc to exaggerate the effects
+		p = p_miscentered
+		@info "underlying params" p.rs p.ρ0 M200 c200
+		gt = __demo.calculate_azimuthally_averaged_gt.(myR, Ref(p); Σcritinv=1/Σcrit)
+		f = 1/Σcrit
+		G = gt*Σcrit
+
+		# Check: parameters are off when not applying miscentering correction
+		(check_rs, check_ρs) = NFW_find_rs_ρs_from_last_Gf(
+			nfw.cm; GfTail=G[end]*f, Rtail=maximum(myR),
+			Gf_NFW_func=(R; rs, ρs) -> Gf_NFW(R; rs, ρs, f∞=f)
+		)
+		@info "matched params from last Gf data point w/o miscentering correction" (check_rs, check_ρs)
+		@assert abs(check_rs/p.rs - 1) > .02 "_should_ be off w/o correction!"
+		@assert abs(check_ρs/p.ρ0 - 1) > .01 "_should_ be off w/o correction!"
+
+		# Check: parameters are _not_ off when applying miscentering correction
+		(check_rs, check_ρs) = NFW_find_rs_ρs_from_last_Gf(
+			nfw.cm; GfTail=G[end]*f, Rtail=maximum(myR),
+			Gf_NFW_func=(R; rs, ρs) -> Gf_NFW_approx_miscentering_applied(
+				R; rs, ρs, f∞=f, Rmc²=p_miscentered.x0^2
+			)
+		)
+		@info "matched params from last Gf data point w/ miscentering correction" (check_rs, check_ρs)
+		@assert abs(check_rs/p.rs - 1) < 1e-3 "should _not_ be off w correction!"
+		@assert abs(check_ρs/p.ρ0 - 1) < 1e-3 "should _not_ be off w correction!"
+	end	
+	
+	MNFW(r) = let
+		p = p_original
+		4π*p.ρ0*p.rs^3*(log(1 + r/p.rs)  - 1/(1 + p.rs/r))
+	end
+	gobs_true = (R -> u"G"*MNFW(R)/R^2 |> u"m/s^2").(R)
+
+	do_asserts(;
+		R=R,
+		gobs_centered=gobs_centered,
+		gobs_true=gobs_true,
+		gobs_uncorrected=gobs_uncorrected,
+		gobs_corrected1=gobs_corrected1,
+		gobs_corrected2=gobs_corrected2,
+		gobs_corrected1_stat_err=gobs_corrected1_stat_err,
+		gobs_corrected2_stat_err=gobs_corrected2_stat_err,
+	)
+
+	# Plots that show this visually
+	p1 = plot(
+		R, gobs_centered ./ gobs_true,
+		label="M reconst. original / M true", color=:black,
+		ylim=(:auto, 1.05)
+	)
+	plot!(p1, R,
+		gobs_corrected1 ./ gobs_true,
+		ribbon=gobs_corrected1_stat_err ./ gobs_true,
+		label="M reconst. miscentered, corrected (Preprocess G) / M true", color=3, marker=:diamond, ms=2,
+	)
+	plot!(p1, R,
+		gobs_corrected2 ./ gobs_true,
+		# ribbon=gobs_corrected2_stat_err ./ gobs_true,
+		label="M reconst. miscentered, corrected / M true", color=4, marker=:diamond, ms=2,
+	)
+	plot!(p1,
+		R, gobs_uncorrected ./ gobs_true,
+		label="M reconst. miscentered / M true", color=1, marker=:diamond, ms=2,
+	)
+	p2 = plot(
+		R, gobs_centered ./ gobs_true,
+		label="M reconst. original / M true", color=:black,
+		ylim=(:auto, 1.05)
+	)
+	plot!(p2, R,
+		gobs_corrected2 ./ gobs_true,
+		ribbon=gobs_corrected2_stat_err ./ gobs_true,
+		label="M reconst. miscentered, corrected / M true", color=4, marker=:diamond, ms=2,
+	)
+	plot!(p2, R,
+		gobs_corrected1 ./ gobs_true,
+		# ribbon=gobs_corrected1_stat_err ./ gobs_true,
+		label="M reconst. miscentered, corrected (Preprocess G) / M true", color=3, marker=:diamond, ms=2,
+	)
+	plot!(p2,
+		R, gobs_uncorrected ./ gobs_true,
+		label="M reconst. miscentered / M true", color=1, marker=:diamond, ms=2,
+	)
+	plot(p1, p2, layout=(2,1), size=(600, 400*2))
+end
+
+# ╔═╡ 6945f330-a832-4a74-91df-a027206d536b
+@plutoonly do_NFW_miscentering_test(
+	Σcritfactor=1, interpolate=InterpolateLnR(2),
+	do_asserts = (; R, gobs_centered, gobs_true, gobs_uncorrected, gobs_corrected1, gobs_corrected2, gobs_corrected1_stat_err, gobs_corrected2_stat_err) -> let
+		
+		# Assert some stuff
+		# 1) reconstruction works for correctly centered profile
+		@assert all(abs.(gobs_centered ./ gobs_true .- 1) .< 1e-6)
+		# 2a) reconstruction _doesn't_ work for miscentered profile at small radii (>5%)
+		sel = R .< .5u"Mpc"
+		@assert all(abs.(gobs_uncorrected[sel] ./ gobs_true[sel] .- 1) .> .05)
+		# 2b) at large radii it slowly gets better (naturally) (<1.5% here)
+		sel = R .> 1.0u"Mpc"
+		@assert all(abs.(gobs_uncorrected[sel] ./ gobs_true[sel] .- 1) .< .015)
+		# 3a) Miscentering correction helps at small radii! (btter than 1.1%)
+		sel = R .< .5u"Mpc"
+		@assert all(abs.(gobs_corrected1[sel] ./ gobs_true[sel] .- 1) .< .011)
+		@assert all(abs.(gobs_corrected2[sel] ./ gobs_true[sel] .- 1) .< .011)
+		# 3b) Miscentering correction also helps at large radii (now permill!)
+		sel = R .> 1.0u"Mpc"
+		@assert all(abs.(gobs_corrected1[sel] ./ gobs_true[sel] .- 1) .< .001)
+		@assert all(abs.(gobs_corrected2[sel] ./ gobs_true[sel] .- 1) .< .001)
+	
+		# 4) Linearity in Rmc^2 means: Uncertainty in gobs induced by Rmc^2 = gobs[Rmc^2-Rmc^2] - gobs[Rmc^2=0]
+		@assert all(abs.(abs.(gobs_uncorrected .- gobs_corrected1) ./gobs_corrected1_stat_err .- 1) .< .01)
+		@assert all(abs.(abs.(gobs_uncorrected .- gobs_corrected2) ./gobs_corrected2_stat_err .- 1) .< .01)
+
+		# 5) Comparing `MiscenterCorrectSmallRmc` and `...PreprocessG` may
+		# give slightly different results b/c they are equivalent only up to terms of
+		# order κ(Rmc/R)^2 which can be permill stuff here
+		@assert all(abs.(gobs_corrected1 .- gobs_corrected2) ./ abs.(gobs_corrected1) .< 8e-3)
+	end
+)
+
 # ╔═╡ e3401c57-3fe6-4526-a128-387672b33863
 md"""
 ## Miscentering correction
@@ -2064,6 +2728,7 @@ end
 # ╠═3e5aa347-e19e-4107-a85e-30aa2515fb3a
 # ╟─c8046b24-dfe7-4bf2-8787-b33d855e586f
 # ╠═64e5f173-11be-4dbf-b9ab-f652c50d9c09
+# ╟─fa01d0c3-f793-44a8-a406-776b77786aa9
 # ╠═49397343-2023-4627-89e6-74170976c890
 # ╟─42855db1-3956-429e-afe7-46d385e5148c
 # ╠═2c7ad8b1-4d4b-4117-82b2-79220746b769
@@ -2071,8 +2736,16 @@ end
 # ╟─6bfbe740-2993-4ae1-ad30-54ea923e0e1c
 # ╟─dfe40541-396b-485b-bcb6-d70730a24867
 # ╠═c86ab391-86c3-44f8-b0b9-20fb70c4dc87
+# ╟─fa506a97-1c00-488d-a4d1-18b878bc3640
+# ╠═6f593629-bd08-44ad-8941-54c95f131908
+# ╠═0134ff7b-b627-4016-9a4b-d686207111b3
+# ╠═d872bd18-384e-42cd-9979-be72f8e82b05
+# ╠═ae4b04aa-f4a2-4060-89a6-211eb40a1808
+# ╠═f42c2a3a-ac7f-45cd-84dc-8eccd147ccab
+# ╟─ea9fc39e-ba29-4502-927f-d2ca77e3b4e7
 # ╠═c449a9c8-1739-481f-87d5-982532c2955c
 # ╟─861b3ac9-14df-462a-9aa8-40ef9a521b81
+# ╠═df868364-b8c4-47f8-8f8f-860698b448b3
 # ╠═18dccd90-f99f-11ee-1bf6-f1ca60e4fcd0
 # ╟─f4311bdf-db19-4886-93f2-51143e6845bc
 # ╟─f14ddc03-eb68-4029-a828-c78827482ead
@@ -2091,6 +2764,11 @@ end
 # ╟─9dcd6d67-90f6-4cd2-843c-02b3f6d196cd
 # ╠═dd9afde0-ea99-41c5-8b86-da1c91a09fc4
 # ╠═cda4a385-3c68-430d-8e86-abd54374dffa
+# ╟─044926fb-bdf1-4221-905e-de2c04946709
+# ╠═81c1fde2-c7fa-456b-b720-52f0358ffa27
+# ╠═072cf58f-902f-4ca8-aec2-be425f3ad547
+# ╠═6945f330-a832-4a74-91df-a027206d536b
+# ╟─f1d226a2-4bc0-4b31-a2e8-92540a9e53d5
 # ╟─e3401c57-3fe6-4526-a128-387672b33863
 # ╠═bfd8b4e9-4b43-4720-bcc2-9263ac2d2362
 # ╠═8f2f297f-49b9-4dba-bb52-3868019aa1ea
