@@ -1,0 +1,12 @@
+[project]
+name = "spherical-cluster-mass"
+version = "0.1.0"
+description = "Demo of how to use `SphericalClusterMass.jl` from python"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "astropy>=7.0.1",
+    "juliacall>=0.9.24",
+    "matplotlib>=3.10.1",
+    "numpy>=2.2.5",
+]

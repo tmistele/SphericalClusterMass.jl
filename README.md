@@ -1,7 +1,9 @@
 # Galaxy cluster mass profiles from weak gravitational lensing assuming spherical symmetry
 
-Package to infer galaxy cluster mass profiles from weak-lensing data assuming only spherical symmetry (and not assuming a specific mass profile such as an NFW profile).
+Julia package to infer galaxy cluster mass profiles from weak-lensing data assuming only spherical symmetry (and not assuming a specific mass profile such as an NFW profile).
 See [arXiv:2408.07026](https://arxiv.org/abs/2408.07026) for details.
+
+If you want to use this from Python, you can do so with [juliacall](https://juliapy.github.io/PythonCall.jl/stable/), see the [examples folder](./examples/python).
 
 ## Installation
 

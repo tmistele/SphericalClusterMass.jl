@@ -1,0 +1,13 @@
+{
+    "packages": {
+        "SphericalClusterMass": {
+            "uuid": "4e4236b1-b06d-4ded-9e3d-2d170138da79"
+        },
+        "Unitful": {
+            "uuid": "1986cc42-f94f-5a68-af5c-568840ba703d"
+        },
+        "UnitfulAstro": {
+            "uuid": "6112ee07-acf9-5e0f-b108-d242c714bf9f"
+        }
+    }
+}
