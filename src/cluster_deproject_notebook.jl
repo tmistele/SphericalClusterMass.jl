@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.5
+# v0.20.9
 
 using Markdown
 using InteractiveUtils
@@ -848,6 +848,8 @@ begin
 		@assert abs(d_gNFW(.1)/(-9.70774) - 1) < 1e-6
 		@assert abs(d_gNFW(1.1)/(-0.481767) - 1) < 1e-6
 		@assert d_gNFW(1.0) == -(10/3)+log(16)
+		@assert abs(d_gNFW(1.0)/d_gNFW(0.99999)  -1 ) < 1e-4
+		@assert abs(d_gNFW(1.0)/d_gNFW(1.00001)  -1 ) < 1e-4
 	end
 end
 
@@ -1150,7 +1152,28 @@ const Gf_NFW_approx_miscentering_applied = let
 		p*(gNFW(x) - fNFW(x)) / (1 - p*fNFW(x))
 	end
 	dH(lnx; p) = ForwardDiff.derivative(lny -> H(lny; p), lnx)
-	d²H(lnx; p) = ForwardDiff.derivative(lny -> dH(lny; p), lnx)
+	d²H(lnx; p) = if abs(lnx) < 1e-3
+		# Mathematica
+		4p*(
+			-6525 + 903p - 206p^2 +
+			9450log(2) - 1710p*log(2) + 276p^2*log(2)
+		)/( 175(-3 + p)^3)
+	else
+		# This here is numerically tricky for lnx very close to 0.
+		# So don't use it then.
+		# The lnx=0 analytical result from Mathematica should be a good approximation
+		# already for |ln x| < 1e-3.
+		ForwardDiff.derivative(lny -> dH(lny; p), lnx)
+	end
+
+	@plutoonly let
+		@assert abs(d²H(0.0; p=.5)/0.087459 - 1) < 1e-5
+		@assert abs(d²H(0.0; p=.9)/0.534694 - 1) < 1e-5
+		@assert abs(d²H(1e-3; p=.9)/0.534694 - 1) < 1e-2
+		@assert abs(d²H(1e-4; p=.9)/0.534694 - 1) < 1e-4
+		@assert abs(d²H(-1e-3; p=.9)/0.534694 - 1) < 1e-2
+		@assert abs(d²H(-1e-4; p=.9)/0.534694 - 1) < 1e-4
+	end
 
 	# This is:
 	#  (G₊_tail - ϵ² D G₊_tail)(R)
