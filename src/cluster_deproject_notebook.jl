@@ -2188,6 +2188,130 @@ md"""
 	plot!(xscale=:log10, ylabel="M_reconstructed/M_true")
 end
 
+# ╔═╡ bf00d853-5a7e-4509-aa2b-4318dde040e1
+@plutoonly let
+	# Test: When reconstructing ΔΣ from G, different extrapolation choices
+	#       differ by a radius-independent factor!
+	# 
+	# At least in the f_c = const case.
+	# 
+	# That's because
+	# (ΔΣ|_extrapolate 1)/(ΔΣ_extrapolate) = exp(- ∫_(R_max)^∞ dR'/R' 2 [
+	# 	Gf/(1-Gf)|_extrapolate1 - Gf/(1-Gf)|_extrapolate2
+	# ])
+	#
+	# Note that only "Rmax" occurs here. Everything else *cancels exactly*!
+	#
+	# Because the extrapolation (the only thing that differs) enters only in the
+	# exp(-∫ Gf/...) factor and nowhere else (for R < Rmax).
+
+	# Also test: If we assume a *slower* decay for the extrapolation, that makes
+	#            G *larger* at large radii (trivially).
+	#            But: Relative to _other_ extrapolations, it makes the resulting
+	#                 ΔΣ *smaller*. That's because of the exponential exp(-∫ Gf/...)
+	#                 factor. (That applies only for ΔΣ(R) with R < Rmax. At 
+	#                 larger R, the prefactor of the exponent is also extrapolated
+	#                 and usually wins out).
+
+	cosmo = Cosmology.cosmology(h=.7, OmegaM=.3)
+	zl = .3
+	H = Cosmology.H(cosmo, zl)
+	ρcrit = 3*H^2/(8π*u"G") |> u"Msun/Mpc^3"
+	nfw = let
+		cm = CMRelationMaccio2008(ρcrit, cosmo.h) 
+		ExtrapolateNFW(cm)
+	end
+	
+	# Choose ρ0 / rs that matches mass-concentration relation below
+	M200 = 1e15u"Msun"
+	# According to Maccio et al that's (Li2020 formulas with sign fixed)
+	c200 = 10^(.83 - .098*log10(M200*cosmo.h/(1e12u"Msun")) )
+	r200 = ( M200 / ( (4π/3) * 200 * ρcrit))^(1/3)
+	rs = r200/c200
+	ρ0 = M200/(4π*rs^3)/(log(1+c200) - c200/(1+c200))
+	
+	p = __demo.ProfileNFW(; ρ0, rs, x0=.0u"Mpc", y0=.0u"Mpc")
+	Σcrit=2500u"Msun/pc^2"
+	Gt = R -> __demo.calculate_azimuthally_averaged_gt(R, p; Σcritinv=1/Σcrit) * Σcrit
+
+	# Mass we reconstruct from shear
+	R = (.2:.04:10 |> collect) .* u"Mpc"
+	G = Gt.(R)
+	f = 1/Σcrit
+	M_reconstructed = extrapolate -> calculate_gobs(;
+		G, f, R,
+		interpolate=InterpolateLnR(2),
+		extrapolate=extrapolate
+	).(R ./ u"Mpc") .* (R .^ 2) ./ u"G" .|> u"Msun"
+
+	# Actual mass
+	MNFW(r) = 4π*p.ρ0*p.rs^3*(log(1 + r/p.rs)  - 1/(1 + p.rs/r))
+
+	powerhalf = ExtrapolatePowerDecay(1/2)
+	power1 = ExtrapolatePowerDecay(1)
+	power2 = ExtrapolatePowerDecay(2)
+	p1 = plot(R,
+		 M_reconstructed(power1) ./ MNFW.(R),
+		 c=:gray, ls=:dash, label="reconstructed 1/R extrapolate")
+	plot!(R,
+		  M_reconstructed(power2) ./ MNFW.(R),
+		  c=:green, ls=:dash, label="reconstruted 1/R² extrapolate")
+	plot!(R,
+		  M_reconstructed(powerhalf) ./ MNFW.(R),
+		  c=:red, ls=:dash, label="reconstruted 1/√R extrapolate")
+	plot!(R,
+		  M_reconstructed(nfw) ./ MNFW.(R),
+		  c=:black, ls=:dash, label="reconstruted NFW extrapolate")
+	
+	plot!(xscale=:log10, legend_title="reconstructed mass (relative to true, NFW mass)", ylabel="M_reconstructed/M_true", ylim=(.99, 1.01))
+
+
+	let
+		ΔΣ_reconstructed = extrapolate -> calculate_from_ΔΣ(
+			_just_get_ΔΣ;
+			G, f, R, interpolate=InterpolateLnR(2), extrapolate, miscenter_correct=MiscenterCorrectNone()
+		)
+	
+		function _just_get_ΔΣ(
+			extrapolate,
+			interpolate,
+			miscenter_correct,
+			pre;
+			ΔΣ, rMpc, f∞, Ĝvalues,
+		)
+			ΔΣ
+		end
+
+		ΔΣ_power1 = ΔΣ_reconstructed(power1).(R ./ u"Mpc")
+		ΔΣ_power2 = ΔΣ_reconstructed(power2).(R ./ u"Mpc")
+		ΔΣ_powerhalf = ΔΣ_reconstructed(powerhalf).(R ./ u"Mpc")
+		ΔΣ_nfw = ΔΣ_reconstructed(nfw).(R ./ u"Mpc")
+
+		# Test: all ratios of these are the same at *all* radii
+		@assert all(abs.((ΔΣ_power1 ./ ΔΣ_nfw) ./ (ΔΣ_power1[end] / ΔΣ_nfw[end]) .- 1) .< 1e-5)
+		@assert all(abs.((ΔΣ_power2 ./ ΔΣ_nfw) ./ (ΔΣ_power2[end] / ΔΣ_nfw[end]) .- 1) .< 4e-5)
+		@assert all(abs.((ΔΣ_powerhalf ./ ΔΣ_nfw) ./ (ΔΣ_powerhalf[end] / ΔΣ_nfw[end]) .- 1) .< 1e-5)
+
+		# Test: *slower* decay, aka *larger* Gf leads to *smaller* ΔΣ @ R < Rmax
+		# (because of the exp(-∫...) factor).
+		@assert all(ΔΣ_powerhalf .< ΔΣ_power1)
+		@assert all(ΔΣ_powerhalf .< ΔΣ_power2)
+		@assert all(ΔΣ_power1 .< ΔΣ_power2)
+		@assert all(ΔΣ_power1 .< ΔΣ_nfw) # NFW = 1/(R ln(R)) or so
+		
+		p2 = plot(R, ΔΣ_power1 ./ ΔΣ_nfw, label="1/R extrapolation", c=:gray)
+		plot!(R, ΔΣ_power2 ./ ΔΣ_nfw, label="1/R^2 extrapolation", c=:green)
+		plot!(R, ΔΣ_powerhalf ./ ΔΣ_nfw, label="1/sqrt(R) extrapolation", c=:red)
+		plot!(
+			legend_title="reconstructed ΔΣ relative to reconstr. ΔΣ with NFW extrap.",
+			leg=(.1, .53)
+		)
+
+		plot(p1, p2, layout=(2,1), size=(600, 800))
+	end
+end
+
+
 # ╔═╡ 072cf58f-902f-4ca8-aec2-be425f3ad547
 @plutoonly let
 	# Super-simple smoke test to check that ForwardDiff works with ExtrapolateNFW
@@ -2789,6 +2913,7 @@ end
 # ╠═cda4a385-3c68-430d-8e86-abd54374dffa
 # ╟─044926fb-bdf1-4221-905e-de2c04946709
 # ╠═81c1fde2-c7fa-456b-b720-52f0358ffa27
+# ╠═bf00d853-5a7e-4509-aa2b-4318dde040e1
 # ╠═072cf58f-902f-4ca8-aec2-be425f3ad547
 # ╠═6945f330-a832-4a74-91df-a027206d536b
 # ╟─f1d226a2-4bc0-4b31-a2e8-92540a9e53d5
