@@ -26,7 +26,7 @@ using LinearAlgebra
 
 Then you can get the deprojected mass from the azimuthally averaged tangential reduced shear $G_+ = \langle g_+ \Sigma_{\mathrm{crit}} \rangle$ and the azimuthally averaged inverse critical surface density $f_c = \langle \Sigma_{\mathrm{crit}}^{-1} \rangle$
 (alternatively, if individual source redshifts are not available, you can use $G_+ = \langle g_+ \rangle / \langle \Sigma_{\mathrm{crit}}^{-1} \rangle$ and $f_c = \langle \Sigma_{\mathrm{crit}}^{-2} \rangle / \langle \Sigma_{\mathrm{crit}}^{-1} \rangle$).
-The following code calculates (a form of) the deprojected mass profile and the associated covariance matrix,
+The following code calculates the deprojected mass profile and the associated covariance matrix,
 
 ```julia
 R=[.2, .5, .7] .* u"Mpc"
@@ -52,17 +52,13 @@ result = calculate_M_and_covariance_in_bins(
 
 This will run for a few seconds on the first run to compile the code.
 Subsequent runs will be fast, unless the number of data points changes, which requires recompilation.
-`result` is a named tuple with fields `M`, `M_stat_cov` and `M_stat_err` where `M` refers to the enclosed 3D mass $M(r)$.
-The deprojected mass $M$ and its statistical uncertainties and covariance matrix can be inferred from this.
-For example,
-
+`result` is a named tuple with fields `M`, `M_stat_cov` and `M_stat_err` where `M` refers to the deprojected 3D mass $M(r)$.
+Let's have a look this mass profile and its error bars,
 ```julia
 using Plots
 plot(R, result.M, yerror=result.M_stat_err)
 ```
-
-We can also have a look at the correlation matrix
-
+and its correlation matrix
 ```julia
 heatmap(result.M_stat_cov ./ (result.M_stat_err * result.M_stat_err'))
 ```
