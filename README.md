@@ -61,6 +61,12 @@ using Plots
 plot(R, result.M, yerror=result.M_stat_err)
 ```
 
+We can also have a look at the correlation matrix
+
+```julia
+heatmap(result.M_stat_cov ./ (result.M_stat_err * result.M_stat_err'))
+```
+
 ### Faster calculation assuming constant $f_c$
 
 In practice, $f_c$ is often reasonably constant as a function of radius.
