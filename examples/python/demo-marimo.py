@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.13.4"
+__generated_with = "0.16.0"
 app = marimo.App(width="medium")
 
 
@@ -17,7 +17,7 @@ def _():
 
     # That's our own code
     import deproject as d
-    return const, d, mo, np, plt, u
+    return d, mo, np, plt, u
 
 
 @app.cell(hide_code=True)
@@ -27,13 +27,13 @@ def _():
 
 
 @app.cell
-def _(const, d, np, u):
+def _(d, np, u):
     R = np.array([0.1, 0.2, 0.3, .4]) * u.Mpc
     G = 1e3 * np.array([0.3, 0.2, 0.1, .05]) * u.Msun / u.pc**2
     f = 1e-3 * np.array([0.9, 0.9, 0.9, 0.9]) / (u.Msun / u.pc**2)
     G_covariance = np.diag((G * 0.1) ** 2)  # 10% measurement error
 
-    result = d.calculate_gobs_and_covariance_in_bins(
+    result = d.calculate_M_and_covariance_in_bins(
         R=R,
         G=G,
         G_covariance=G_covariance,
@@ -42,12 +42,9 @@ def _(const, d, np, u):
         interpolate=d.jl.InterpolateR(1),
     )
 
-    # Convert to mass
-    M = ((R**2/const.G)*result.gobs).to(u.Msun)
-    M_stat_err = ( (R**2/const.G)*result.gobs_stat_err ).to(u.Msun)
     # Correlation matrix
-    M_stat_corr = result.gobs_stat_cov / np.outer(result.gobs_stat_err, result.gobs_stat_err)
-    return M, M_stat_corr, M_stat_err, R
+    M_stat_corr = result.M_stat_cov / np.outer(result.M_stat_err, result.M_stat_err)
+    return M_stat_corr, R, result
 
 
 @app.cell(hide_code=True)
@@ -57,8 +54,8 @@ def _(mo):
 
 
 @app.cell
-def _(M, M_stat_err, R, plt):
-    plt.errorbar(R, M, yerr=M_stat_err)
+def _(R, plt, result):
+    plt.errorbar(R, result.M, yerr=result.M_stat_err)
     plt.show()
     return
 

@@ -10,15 +10,15 @@ jl.seval("using UnitfulAstro")
 jl.seval("using SphericalClusterMass")
 jl_Mpc = jl.seval('u"Mpc"')
 jl_Msun_pc2 = jl.seval('u"Msun/pc^2"')
-jl_m_s2 = jl.seval('u"m/s^2"')
+jl_Msun = jl.seval('u"Msun"')
 
 
-GobsAndCovarianceInBins = namedtuple('GobsAndCovarianceInBins', [
-    'gobs', 'gobs_stat_err', 'gobs_stat_cov'
+MAndCovarianceInBins = namedtuple('MAndCovarianceInBins', [
+    'M', 'M_stat_err', 'M_stat_cov'
 ])
 
 
-def calculate_gobs_and_covariance_in_bins(
+def calculate_M_and_covariance_in_bins(
     R, G, f, G_covariance, extrapolate, interpolate
 ):
     # Convert from astropy units to julia Unitful units
@@ -36,7 +36,7 @@ def calculate_gobs_and_covariance_in_bins(
         * jl_Msun_pc2
     )
 
-    result = jl.calculate_gobs_and_covariance_in_bins(
+    result = jl.calculate_M_and_covariance_in_bins(
         R=jl_R,
         G=jl_G,
         f=jl_f,
@@ -45,8 +45,8 @@ def calculate_gobs_and_covariance_in_bins(
         interpolate=interpolate,
     )
 
-    return GobsAndCovarianceInBins(
-        gobs=(result.gobs / jl_m_s2).to_numpy() * u.m/u.s**2,
-        gobs_stat_err=(result.gobs_stat_err / jl_m_s2).to_numpy() * u.m/u.s**2,
-        gobs_stat_cov=(result.gobs_stat_cov / jl_m_s2 / jl_m_s2).to_numpy() * (u.m/u.s**2)**2
+    return MAndCovarianceInBins(
+        M=(result.M / jl_Msun).to_numpy() * u.Msun,
+        M_stat_err=(result.M_stat_err / jl_Msun).to_numpy() * u.Msun,
+        M_stat_cov=(result.M_stat_cov / jl_Msun / jl_Msun).to_numpy() * u.Msun**2
     )

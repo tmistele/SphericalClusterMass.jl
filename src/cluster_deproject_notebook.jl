@@ -92,7 +92,7 @@ begin
 	
 	# Correct up to (including) O((Rmc/R)^2)
 	# (but not including O(κ (Rmc/R)^2))
-	# This applies the correction when calculating gobs from ΔΣ.
+	# This applies the correction when calculating M from ΔΣ.
 	# Advantage: Numerically stable with noisy data. Disadvantage: Slightly slower
 	struct MiscenterCorrectSmallRmc{R} <: AbstractMiscenterCorrect 
 		Rmc²::R # Not typeof(1.0u"Mpc^2") b/c of ForwardDiff
@@ -697,12 +697,12 @@ end
 
 # ╔═╡ 42855db1-3956-429e-afe7-46d385e5148c
 md"""
-## $g_{\mathrm{obs}}$ and covariance
+## $M$ and covariance
 """
 
 # ╔═╡ 6bfbe740-2993-4ae1-ad30-54ea923e0e1c
 md"""
-## $g_{\mathrm{obs}}$ from $\Delta \Sigma$ incl. miscentering correction
+## $M$ from $\Delta \Sigma$ incl. miscentering correction
 """
 
 # ╔═╡ dfe40541-396b-485b-bcb6-d70730a24867
@@ -726,9 +726,9 @@ So we can use the simpler $f = \mathrm{const}$ formulas to calculate the $g_{\ma
   We then have for $n=1$
 
   $\begin{aligned}
-  &g_{\mathrm{obs}}^{\mathrm{tail}}(R) \\
-  &= \int_0^{\theta_{m}} d\theta \Delta \Sigma(R/\sin \theta)\\
-  &= \frac{4 G_N}{f_\infty} G f(R_{\mathrm{max}}) \frac{R_{\mathrm{max}}}{R} \bigg(
+  &M^{\mathrm{tail}}(R) \\
+  &= 4 R^2\int_0^{\theta_{m}} d\theta \Delta \Sigma(R/\sin \theta)\\
+  &= \frac{4 R^2}{f_\infty} G f(R_{\mathrm{max}}) \frac{R_{\mathrm{max}}}{R} \bigg(
   \\
   & \quad \quad 1 - \frac12 G f(R_{\mathrm{max}}) \frac{R_{\mathrm{max}}}{R} \theta_{m} - \cos(\theta_{m}) + \frac12 G f(R_{\mathrm{max}}) \frac{R_{\mathrm{max}}}{R} \cos(\theta_{m}) \sin(\theta_{m}) \\
   &\quad \bigg)
@@ -737,9 +737,9 @@ So we can use the simpler $f = \mathrm{const}$ formulas to calculate the $g_{\ma
   For $n=2$:
 
   $\begin{aligned}
-  &g_{\mathrm{obs}}^{\mathrm{tail}}(R) \\
-  &= \int_0^{\theta_{m}} d\theta \Delta \Sigma(R/\sin \theta)\\
-  &= \frac{4 G_N}{f_\infty} \frac12  G f(R_{\mathrm{max}}) \left(\frac{R_{\mathrm{max}}}{R}\right)^2 \left(
+  &M^{\mathrm{tail}}(R) \\
+  &= 4 R^2 \int_0^{\theta_{m}} d\theta \Delta \Sigma(R/\sin \theta)\\
+  &= \frac{4 R^2}{f_\infty} \frac12  G f(R_{\mathrm{max}}) \left(\frac{R_{\mathrm{max}}}{R}\right)^2 \left(
    \theta_m - \cos(\theta_{m}) \sin(\theta_{m}) 
   \right)
   \end{aligned}$
@@ -748,7 +748,7 @@ So we can use the simpler $f = \mathrm{const}$ formulas to calculate the $g_{\ma
 """
 
 # ╔═╡ c86ab391-86c3-44f8-b0b9-20fb70c4dc87
-function calculate_gobs_tail(
+function calculate_M_tail(
 	extrapolate::ExtrapolatePowerDecay, pre; θlim, f∞, rMpc, rMpcTail
 )
 	n = extrapolate.n
@@ -756,26 +756,26 @@ function calculate_gobs_tail(
 	Gfmax = pre
 
 	if n == 1
-		(4*u"G"/f∞)*Gfmax*(rMpcMax/rMpc)*(
+		(4*(rMpc*u"Mpc")^2/f∞)*Gfmax*(rMpcMax/rMpc)*(
 			1
 			- (1/2)*Gfmax*(rMpcMax/rMpc)*θlim
 			- cos(θlim)
 			+ (1/2)*Gfmax*(rMpcMax/rMpc)*cos(θlim)*sin(θlim)
-		) |> u"m/s^2"
+		) |> u"Msun"
 	elseif n == 2
-		(4*u"G"/f∞)*(1/2)*Gfmax*(rMpcMax/rMpc)^2*(
+		(4*(rMpc*u"Mpc")^2/f∞)*(1/2)*Gfmax*(rMpcMax/rMpc)^2*(
 			θlim - cos(θlim)*sin(θlim)
-		) |> u"m/s^2"
+		) |> u"Msun"
 	else
 		# We could use that integral for the other n as well. It works well.
 		# But I've implemented them already and they're faster of course, so
 		# let's keep them for now.
 		ΔΣtail(rMpc) = (1/f∞)*Gfmax*(rMpcMax/rMpc)^n*(1 - Gfmax*(rMpcMax/rMpc)^n)^(2/n-1)
 
-		4*u"G*Msun/pc^2"*quadgk(
+		4*(rMpc*u"Mpc")^2*u"Msun/pc^2"*quadgk(
 			θ -> ΔΣtail(rMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
 			0, θlim
-		)[1] |> u"m/s^2"
+		)[1] |> u"Msun"
 	end
 end
 
@@ -996,14 +996,15 @@ begin
 end
 
 # ╔═╡ 6f593629-bd08-44ad-8941-54c95f131908
-function calculate_gobs_tail(
+function calculate_M_tail(
 	extrapolate::ExtrapolateNFW, pre; θlim, f∞, rMpc, rMpcTail
 )
 	(rs, ρs, _) = pre
-	4*u"G*Msun/pc^2"*quadgk(
-		θ -> ΔΣ_NFW(rMpc*u"Mpc"/sin(θ); ρs, rs)/u"Msun/pc^2" |> NoUnits,
+	r = rMpc*u"Mpc"
+	4*r^2*u"Msun/pc^2"*quadgk(
+		θ -> ΔΣ_NFW(r/sin(θ); ρs, rs)/u"Msun/pc^2" |> NoUnits,
 		0, θlim
-	)[1] |> u"m/s^2"
+	)[1] |> u"Msun"
 end
 
 # ╔═╡ 3f004698-b952-462f-8824-5c78ab1e08ad
@@ -1273,7 +1274,7 @@ end
 
 # ╔═╡ ea9fc39e-ba29-4502-927f-d2ca77e3b4e7
 md"""
-### Bulk/$g_{\mathrm{obs}}$ itself
+### Bulk/$M$ itself
 """
 
 # ╔═╡ c449a9c8-1739-481f-87d5-982532c2955c
@@ -1284,7 +1285,7 @@ begin
 	# only up to R=Rmax (and the `ODESolution` extrapolation beyond last data point
 	# is often completely off).
 	
-	function calculate_gobs_from_ΔΣ(
+	function calculate_M_from_ΔΣ(
 		extrapolate::E,
 		interpolate::I,
 		::Union{MiscenterCorrectNone, MiscenterCorrectSmallRmcPreprocessG},
@@ -1293,20 +1294,20 @@ begin
 	) where {E<:AbstractExtrapolate, I<:AbstractInterpolate}
 		rMpcTail = maximum(rMpc)
 	
-		gobs(rMpc) = if rMpc < rMpcTail
+		M(rMpc) = if rMpc < rMpcTail
 			θlim = asin(rMpc/rMpcTail)
-			bulk = 4*u"G*Msun/pc^2"*quadgk(
+			bulk = 4*(rMpc*u"Mpc")^2*u"Msun/pc^2"*quadgk(
 				θ -> ΔΣ(rMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
 				θlim, π/2
-			)[1] |> u"m/s^2"
-			tail = calculate_gobs_tail(extrapolate, pre; θlim, f∞, rMpc, rMpcTail)
+			)[1] |> u"Msun"
+			tail = calculate_M_tail(extrapolate, pre; θlim, f∞, rMpc, rMpcTail)
 			bulk + tail
 		else
-			calculate_gobs_tail(extrapolate, pre; θlim=π/2, f∞, rMpc, rMpcTail)
+			calculate_M_tail(extrapolate, pre; θlim=π/2, f∞, rMpc, rMpcTail)
 		end
 	end
 	
-	function calculate_gobs_from_ΔΣ(
+	function calculate_M_from_ΔΣ(
 		extrapolate::Union{ExtrapolatePowerDecay, ExtrapolateNFW},
 		interpolate::I,
 		miscenter_correct::MiscenterCorrectSmallRmc,
@@ -1397,16 +1398,16 @@ begin
 			ΔΣ̂val + (1/4)*(corr_0d - corr_1d - corr_2d)
 		end
 		
-		gobs(rMpc) = if rMpc < rMpcTail
+		M(rMpc) = if rMpc < rMpcTail
 			θlim = asin(rMpc/rMpcTail)
-			bulk = 4*u"G*Msun/pc^2"*quadgk(
+			bulk = 4*(rMpc*u"Mpc")^2*u"Msun/pc^2"*quadgk(
 				θ -> ΔΣ̂_integrand(rMpc, θ),
 				θlim, π/2
-			)[1] |> u"m/s^2"
+			)[1] |> u"Msun"
 
 			boundary = let
 				RMpc = rMpcTail # = rMpc/sin(θlim)
-				4*u"G*Msun/pc^2"* (-1/4) * (Rmc²Mpc/rMpc^2) * (
+				4*(rMpc*u"Mpc")^2*u"Msun/pc^2"* (-1/4) * (Rmc²Mpc/rMpc^2) * (
 					(ΔΣ̂(RMpc) - ΔΣ̂(rMpc))*sin(θlim)^2*tan(θlim)
 					# See `ΔΣ̂_integrand`. Using Ĝ here for derivative.
 					# Care: This is supposed to be RMpc^-. For linear interpolation
@@ -1415,14 +1416,14 @@ begin
 					+ (
 						sin(θlim)*dlog_Ĝ(.999999 * RMpc) - dlog_Ĝ(rMpc)
 					)*sin(θlim)*tan(θlim)
-				) |> u"m/s^2"
+				) |> u"Msun"
 			end
 			
-			tail = calculate_gobs_tail(extrapolate, pre; θlim, f∞, rMpc, rMpcTail)
+			tail = calculate_M_tail(extrapolate, pre; θlim, f∞, rMpc, rMpcTail)
 			
 			bulk + boundary + tail
 		else
-			calculate_gobs_tail(extrapolate, pre; θlim=π/2, f∞, rMpc, rMpcTail)
+			calculate_M_tail(extrapolate, pre; θlim=π/2, f∞, rMpc, rMpcTail)
 		end
 	end
 end
@@ -1435,7 +1436,7 @@ md"""
 # ╔═╡ df868364-b8c4-47f8-8f8f-860698b448b3
 begin
 	# Generic mechanism to pre-calculate something that is then passed to I/J
-	# integral computation, and to gobs computation. Currently used to precompute
+	# integral computation, and to M computation. Currently used to precompute
 	# the parameters for the extrapolation/tail.
 	
 	function precompute(
@@ -1640,7 +1641,7 @@ begin
 end
 
 # ╔═╡ 2c7ad8b1-4d4b-4117-82b2-79220746b769
-function calculate_gobs(;
+function calculate_M(;
 	# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
 	G, # typeof([1.0*u"Msun/pc^2"]),
 	# No type for f since we allow both vector and scalar
@@ -1655,13 +1656,13 @@ function calculate_gobs(;
 	MC<:AbstractMiscenterCorrect
 }
 	calculate_from_ΔΣ(
-		calculate_gobs_from_ΔΣ;
+		calculate_M_from_ΔΣ;
 		G, f, R, interpolate, extrapolate, miscenter_correct
 	)
 end
 
 # ╔═╡ 2e3d91f1-6b0f-4f5e-9761-e6a359585653
-function calculate_gobs_and_covariance_in_bins(;
+function calculate_M_and_covariance_in_bins(;
 		G::typeof([1.0*u"Msun/pc^2"]),
 		f,
 		R::typeof([1.0*u"Mpc"]),
@@ -1698,7 +1699,7 @@ function calculate_gobs_and_covariance_in_bins(;
 	# Forward-diff
 	# - requires a single argument as input
 	# - no units as input or output
-	gobs_func = input -> let
+	M_func = input -> let
 		
 		# The value of this `new_...` should be identical to `miscenter_correct`.
 		# This is just to make it clear to `ForwardDiff.jl` where `Rmc²` is used.
@@ -1706,32 +1707,32 @@ function calculate_gobs_and_covariance_in_bins(;
 			miscenter_correct, input[end] .* u"Mpc^2"
 		)
 		
-		gobs = calculate_gobs(;
+		M = calculate_M(;
 			G=input[1:end-1] .* u"Msun/pc^2",
 			f, R, interpolate, extrapolate,
 			miscenter_correct=new_miscenter_correct, # _not_ the original one!
 		)
-		gobs.(RMpc) ./ u"m/s^2"
+		M.(RMpc) ./ u"Msun"
 	end
 
 	# We could just `DiffResults` to avoid calculating `value` ourselves. That is
 	# also done during the jacobian calculation anyway.
 	# But: I tried that and in some cases the `value` was then off. Only by <1% but
-	# still. Don't like that it's off at all. So let's just call gobs_fun(...)
+	# still. Don't like that it's off at all. So let's just call M_func(...)
 	# once ourselves and lose a little perf :)
-	value = gobs_func(input)
-	jac = ForwardDiff.jacobian(gobs_func, input)
+	value = M_func(input)
+	jac = ForwardDiff.jacobian(M_func, input)
 
-	# `gobs_func` doesn't have units. So we have to put them back ourselves.
-	gobs = value .* u"m/s^2"
+	# `M_func` doesn't have units. So we have to put them back ourselves.
+	M = value .* u"Msun"
 	# See here https://juliadiff.org/ForwardDiff.jl/stable/user/api/
-	# jac[α, i] = ∂gobs(α)/∂x[i]
+	# jac[α, i] = ∂M(α)/∂x[i]
 	# So the correct thing is jac * Cov * transpose(jac)
 	# (and _not_ transpose(jac) * Cov * jac)
-	gobs_stat_cov = jac * input_cov * jac' .* u"(m/s^2)^2"
-	gobs_stat_err = sqrt.(diag(gobs_stat_cov))
+	M_stat_cov = jac * input_cov * jac' .* u"Msun^2"
+	M_stat_err = sqrt.(diag(M_stat_cov))
 		
-	(gobs=gobs, gobs_stat_cov=gobs_stat_cov, gobs_stat_err=gobs_stat_err)
+	(M=M, M_stat_cov=M_stat_cov, M_stat_err=M_stat_err)
 end
 
 # ╔═╡ f4311bdf-db19-4886-93f2-51143e6845bc
@@ -1749,39 +1750,39 @@ when f is constant
 # ╔═╡ 9dd1c7c4-a44c-4b5c-a810-b6b171ac2569
 @plutoonly let
 	# Test: For f = const, both methods should agree
-	gobs1overR = calculate_gobs(
+	M1overR = calculate_M(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=.9 ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1),
 		interpolate=InterpolateR(1),
 	)
-	gobs1overRinterpLnR = calculate_gobs(
+	M1overRinterpLnR = calculate_M(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=.9 ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1),
 		interpolate=InterpolateLnR(1),
 	)
-	plot(RMpc -> gobs1overR(RMpc), .2, 1.3, label="Extrapolate 1/R, interpolateR(1)")
-	plot!(RMpc -> gobs1overRinterpLnR(RMpc), .2, 1.3, label="Extrapolate 1/R, interpolateLnR(1)")
+	plot(RMpc -> M1overR(RMpc)/(RMpc*u"Mpc"), .2, 1.3, label="Extrapolate 1/R, interpolateR(1)")
+	plot!(RMpc -> M1overRinterpLnR(RMpc)/(RMpc*u"Mpc"), .2, 1.3, label="Extrapolate 1/R, interpolateLnR(1)")
 
-	gobs1overR = calculate_gobs(
+	M1overR = calculate_M(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=[.9, .9, .9] ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1),
 		interpolate=InterpolateR(1),
 	)
-	gobs1overRinterpLnR = calculate_gobs(
+	M1overRinterpLnR = calculate_M(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		f=[.9, .9, .9] ./ u"Msun/pc^2",
 		extrapolate=ExtrapolatePowerDecay(1),
 		interpolate=InterpolateLnR(1),
 	)
-	plot!(RMpc -> gobs1overR(RMpc), .2, 1.3, label="(general) Extrapolate 1/R, interpolateR(1)", ls=:dash)
-	plot!(RMpc -> gobs1overRinterpLnR(RMpc), .2, 1.3, label="(general) Extrapolate 1/R, interpolateLnR(1)", ls=:dash)
+	plot!(RMpc -> M1overR(RMpc)/(RMpc*u"Mpc"), .2, 1.3, label="(general) Extrapolate 1/R, interpolateR(1)", ls=:dash)
+	plot!(RMpc -> M1overRinterpLnR(RMpc)/(RMpc*u"Mpc"), .2, 1.3, label="(general) Extrapolate 1/R, interpolateLnR(1)", ls=:dash)
 end
 
 # ╔═╡ 2dbc3c0b-8050-448b-b836-aafc21a7f189
@@ -1808,11 +1809,19 @@ Because in this limit $\Delta \Sigma$ is just $G$ and $f$ drops out and we can a
 
 	function do_test(; f,  extrapolate, allowed_difference_factor=1.0, allowed_difference_factor_err=1.0, miscenter_correct=MiscenterCorrectNone())
 		@info "Testing with" nameof(typeof(f)) extrapolate nameof(typeof(miscenter_correct))
-		new = calculate_gobs_and_covariance_in_bins(;
+		new_M = calculate_M_and_covariance_in_bins(;
 			R=R, f=f, G=G, G_covariance=G_covariance,
 			interpolate=InterpolateR(1),
 			extrapolate, miscenter_correct
 		)
+		# Convert M to gobs to compare to old code
+		new = (
+			gobs=new_M.M .* u"G" ./ (R .^ 2) .|> u"m/s^2",
+			gobs_stat_err=new_M.M_stat_err .* u"G" ./ (R .^ 2) .|> u"m/s^2",
+			gobs_stat_cov=new_M.M_stat_cov .* u"G^2" ./ ( (R.^2) * (R.^2)') .|> u"(m/s^2)^2",
+		)
+		# Assert so I don't mess up R * R' vs R' * R
+		@assert ( (R.^2) * (R.^2)').size == (length(R), length(R))
 
 		Rmc² = __get_old_Rmc²(miscenter_correct)
 		σ_Rmc² = __get_old_σ_Rmc²(miscenter_correct)
@@ -1916,7 +1925,7 @@ md"""
 
 This is for $\rho \sim 1/r^2(1 + r^2)$ essentially. So SIS core, then $1/r^4$ fall off (reason: that's what Mathematica could do analytically)
 
-Asymptotic behavior of $\Delta \Sigma$ (and thus of $Gf$) is $1/R^2$ for this profile. So at large radii, our $1/R^2$ extrapolation should give a gobs close to the real gobs. And indeed it does!
+Asymptotic behavior of $\Delta \Sigma$ (and thus of $Gf$) is $1/R^2$ for this profile. So at large radii, our $1/R^2$ extrapolation should give an M close to the real M. And indeed it does!
 
 We're asssuming 10% fake errors on $G$ measurements, just so we can test the error calculation a bit.
 """
@@ -1925,7 +1934,7 @@ We're asssuming 10% fake errors on $G$ measurements, just so we can test the err
 @plutoonly function test_reconstruction_SIS_quartic_fall_off(;
 		logRMpc_bin_width, interpolate=InterpolateR(1)
 )
-	# Test: Do we actually recontruct the correct gobs?
+	# Test: Do we actually reconstruct the correct M?
 
 	# See `check-ESD-to-RAR-for-explicit-examples.nb` in `lensing-RAR/`for analytic 
 	# formulas.
@@ -1937,7 +1946,7 @@ We're asssuming 10% fake errors on $G$ measurements, just so we can test the err
 	Σ_real(R) = 100u"Msun/pc^2"*r0 * (
 		1/R - 1/sqrt(R^2+r0^2)
 	)
-	gobs_real(R) = 4*u"G"*(100*r0*u"Msun/pc^2")*r0*atan(R/r0)/R^2 |> u"m/s^2"
+	M_real(R) = 4*(100*r0*u"Msun/pc^2")*r0*atan(R/r0) |> u"Msun"
 
 	# Remove the exponential to test the constant f case
 	f(R) = (1/(2u"Msun/pc^2"))*(1 + exp(-R/200u"kpc"))
@@ -1949,22 +1958,22 @@ We're asssuming 10% fake errors on $G$ measurements, just so we can test the err
 
 	Rbins = 10 .^ (log10(.15):logRMpc_bin_width:log10(3.5)) .* u"Mpc"
 	p = plot(
-		RMpc -> gobs_real(RMpc*u"Mpc") * RMpc^2,
-		.15, 3.5, label="gobs real * R^2",
+		RMpc -> M_real(RMpc*u"Mpc"),
+		.15, 3.5, label="M real",
 		xscale=:log10,
 		xlabel="R in Mpc",
-		ylabel="gobs * R^2",
+		ylabel="M in Msun",
 	)
-	p_gobs_ratio = plot(
+	p_M_ratio = plot(
 		RMpc -> 1.0,
 		.15, 3.5, label="",
 		color=:black,
 		xscale=:log10,
 		xlabel="R in Mpc",
-		ylabel="gobs reconstructed / gobs real",
+		ylabel="M reconstructed / M real",
 	)
 	for n in [1/2, 1, 2, 4]
-		gobs_reconstructed = calculate_gobs_and_covariance_in_bins(
+		M_reconstructed = calculate_M_and_covariance_in_bins(
 			R=Rbins,
 			G=G.(Rbins),
 			G_covariance=diagm(σ_G.(Rbins) .^ 2),
@@ -1974,21 +1983,21 @@ We're asssuming 10% fake errors on $G$ measurements, just so we can test the err
 		)
 		plot!(p,
 			Rbins ./ u"Mpc",
-			gobs_reconstructed.gobs .* (Rbins ./ u"Mpc") .^ 2,
-			yerror=gobs_reconstructed.gobs_stat_err .* (Rbins ./ u"Mpc") .^ 2,
-			label="gobs reconstructed * R^2, 1/R^$(n) extrapolate",
+			M_reconstructed.M,
+			yerror=M_reconstructed.M_stat_err,
+			label="M reconstructed, 1/R^$(n) extrapolate",
 			marker=:diamond,
 		)
-		plot!(p_gobs_ratio,
+		plot!(p_M_ratio,
 			Rbins ./ u"Mpc",
-			gobs_reconstructed.gobs ./ gobs_real.(Rbins),
-			yerror=gobs_reconstructed.gobs_stat_err ./ gobs_real.(Rbins),
+			M_reconstructed.M ./ M_real.(Rbins),
+			yerror=M_reconstructed.M_stat_err ./ M_real.(Rbins),
 			label="1/R^$(n) extrapolate",
 			marker=:diamond,
 		)
 	end
 
-	plot(p, p_gobs_ratio, pGf, size=(600, 400*3), layout=(3,1), left_margin=(15, :mm))
+	plot(p, p_M_ratio, pGf, size=(600, 400*3), layout=(3,1), left_margin=(15, :mm))
 end
 
 # ╔═╡ 53eb9c24-1113-4a78-a006-6487e5d8f732
@@ -2022,7 +2031,7 @@ md"""
 
 # ╔═╡ cda4a385-3c68-430d-8e86-abd54374dffa
 @plutoonly function test_reconstruction_SIS(; logRMpc_bin_width, interpolate)
-	# Test: Do we actually recontruct the correct gobs?
+	# Test: Do we actually reconstruct the correct M?
 
 	# See `check-ESD-to-RAR-for-explicit-examples.nb` in `lensing-RAR/`for analytic 
 	# formulas.
@@ -2034,7 +2043,7 @@ md"""
 	Σ_real(R) = 100u"Msun/pc^2"*r0 * (
 		1/R
 	)
-	gobs_real(R) = 4*u"G"*(100*r0*u"Msun/pc^2")/R |> u"m/s^2"
+	M_real(R) = 4*R*(100*r0*u"Msun/pc^2") |> u"Msun"
 
 	# Remove the exponential to test the constant f case
 	f(R) = (1/(50u"Msun/pc^2"))*(1 + exp(-R/200u"kpc"))
@@ -2044,22 +2053,22 @@ md"""
 
 	Rbins = 10 .^ (log10(.15):logRMpc_bin_width:log10(3.5)) .* u"Mpc"
 	p = plot(
-		RMpc -> gobs_real(RMpc*u"Mpc") * RMpc^2,
-		.15, 3.5, label="gobs real * R^2 ",
+		RMpc -> M_real(RMpc*u"Mpc"),
+		.15, 3.5, label="M real",
 		xscale=:log10,
 		xlabel="R in Mpc",
-		ylabel="gobs * R^2",
+		ylabel="M in Msun",
 	)
-	p_gobs_ratio = plot(
+	p_M_ratio = plot(
 		RMpc -> 1.0,
 		.15, 3.5, label="",
 		color=:black,
 		xscale=:log10,
 		xlabel="R in Mpc",
-		ylabel="gobs reconstructed / gobs real",
+		ylabel="M reconstructed / M real",
 	)
 	for n in [1/2, 1, 2, 4]
-		gobs_reconstructed = calculate_gobs(
+		M_reconstructed = calculate_M(
 			R=Rbins,
 			G=G.(Rbins),
 			f=f.(Rbins),
@@ -2068,19 +2077,19 @@ md"""
 		)
 		plot!(p,
 			Rbins ./ u"Mpc",
-			gobs_reconstructed.(Rbins ./ u"Mpc") .* (Rbins ./ u"Mpc") .^ 2,
-			label="gobs reconstructed * R^2, 1/R^$(n) extrapolate",
+			M_reconstructed.(Rbins ./ u"Mpc"),
+			label="M reconstructed, 1/R^$(n) extrapolate",
 			marker=:diamond,
 		)
-		plot!(p_gobs_ratio,
+		plot!(p_M_ratio,
 			Rbins ./ u"Mpc",
-			gobs_reconstructed.(Rbins ./ u"Mpc")  ./ gobs_real.(Rbins),
+			M_reconstructed.(Rbins ./ u"Mpc")  ./ M_real.(Rbins),
 			label="1/R^$(n) extrapolate",
 			marker=:diamond,
 		)
 	end
 
-	plot(p, p_gobs_ratio, pGf, size=(600, 400*3), layout=(3,1), left_margin=(15, :mm))
+	plot(p, p_M_ratio, pGf, size=(600, 400*3), layout=(3,1), left_margin=(15, :mm))
 end
 
 # ╔═╡ dd9afde0-ea99-41c5-8b86-da1c91a09fc4
@@ -2120,11 +2129,11 @@ md"""
 	R = (.2:.04:10 |> collect) .* u"Mpc"
 	G = Gt.(R)
 	f = 1/Σcrit
-	M_reconstructed = extrapolate -> calculate_gobs(;
+	M_reconstructed = extrapolate -> calculate_M(;
 		G, f, R,
 		interpolate=InterpolateLnR(2),
 		extrapolate=extrapolate
-	).(R ./ u"Mpc") .* (R .^ 2) ./ u"G" .|> u"Msun"
+	).(R ./ u"Mpc")
 
 	# Actual mass
 	MNFW(r) = 4π*p.ρ0*p.rs^3*(log(1 + r/p.rs)  - 1/(1 + p.rs/r))
@@ -2173,11 +2182,11 @@ md"""
 		@assert all(abs.(M_reconstructed(nfw) ./ MNFW.(R) .- 1) .< 1e-3)
 
 		# non-const f version (with J integral) should give ~same result
-		M_nonconst_f = calculate_gobs(;
+		M_nonconst_f = calculate_M(;
 			G, f=ones(length(R)) .* f, R,
 			interpolate=InterpolateLnR(2),
 			extrapolate=nfw
-		).(R ./ u"Mpc") .* (R .^ 2) ./ u"G" .|> u"Msun"
+		).(R ./ u"Mpc")
 		@assert all(abs.(M_nonconst_f ./ M_reconstructed(nfw) .- 1) .< 1e-4)
 	end
 	
@@ -2238,11 +2247,11 @@ end
 	R = (.2:.04:10 |> collect) .* u"Mpc"
 	G = Gt.(R)
 	f = 1/Σcrit
-	M_reconstructed = extrapolate -> calculate_gobs(;
+	M_reconstructed = extrapolate -> calculate_M(;
 		G, f, R,
 		interpolate=InterpolateLnR(2),
 		extrapolate=extrapolate
-	).(R ./ u"Mpc") .* (R .^ 2) ./ u"G" .|> u"Msun"
+	).(R ./ u"Mpc")
 
 	# Actual mass
 	MNFW(r) = 4π*p.ρ0*p.rs^3*(log(1 + r/p.rs)  - 1/(1 + p.rs/r))
@@ -2323,7 +2332,7 @@ end
 		cm = CMRelationMaccio2008(ρcrit, cosmo.h) 
 		ExtrapolateNFW(cm)
 	end
-	res = calculate_gobs_and_covariance_in_bins(
+	res = calculate_M_and_covariance_in_bins(
 		R=[.2, .5, .7] .* u"Mpc",
 		G=[.3, .2, .1] .* u"Msun/pc^2",
 		# 10% uncertainty on G
@@ -2333,9 +2342,9 @@ end
 		interpolate=InterpolateLnR(1),
 	)
 
-	# Should give (very roughly) 10% uncertainty on gobs
-	@info "Relative uncertainty" res.gobs_stat_err ./ res.gobs
-	@assert abs(res.gobs_stat_err[end] / res.gobs[end] - 0.1) < 1e-2
+	# Should give (very roughly) 10% uncertainty on M
+	@info "Relative uncertainty" res.M_stat_err ./ res.M
+	@assert abs(res.M_stat_err[end] / res.M[end] - 0.1) < 1e-2
 end
 
 # ╔═╡ f1d226a2-4bc0-4b31-a2e8-92540a9e53d5
@@ -2375,11 +2384,11 @@ end
 
 	R = collect(.4:.01:3.0) .* u"Mpc"
 
-	calc_gobs = (p, miscenter_correct) -> let 
+	calc_M = (p, miscenter_correct) -> let 
 		gt = __demo.calculate_azimuthally_averaged_gt.(R, Ref(p); Σcritinv=1/Σcrit)
 		f = 1/Σcrit
 		G = gt*Σcrit
-		res = calculate_gobs_and_covariance_in_bins(
+		res = calculate_M_and_covariance_in_bins(
 			R=R, G=G, f=f,
 			G_covariance=zeros(length(R), length(R)) .* u"(Msun/pc^2)^2",
 			interpolate=interpolate,
@@ -2387,12 +2396,12 @@ end
 			miscenter_correct=miscenter_correct
 		)
 
-		(res.gobs, res.gobs_stat_err)
+		(res.M, res.M_stat_err)
 	end
 
-	(gobs_centered, _) = calc_gobs(p_original, MiscenterCorrectNone())
-	(gobs_uncorrected, _) = calc_gobs(p_miscentered, MiscenterCorrectNone())
-	(gobs_corrected1, gobs_corrected1_stat_err) = calc_gobs(
+	(M_centered, _) = calc_M(p_original, MiscenterCorrectNone())
+	(M_uncorrected, _) = calc_M(p_miscentered, MiscenterCorrectNone())
+	(M_corrected1, M_corrected1_stat_err) = calc_M(
 		p_miscentered,
 		MiscenterCorrectSmallRmcPreprocessG(
 			# Correct by the actual Rmc
@@ -2401,7 +2410,7 @@ end
 			σ_Rmc²=(.16u"Mpc")^2
 		)
 	)
-	(gobs_corrected2, gobs_corrected2_stat_err) = calc_gobs(
+	(M_corrected2, M_corrected2_stat_err) = calc_M(
 		p_miscentered,
 		MiscenterCorrectSmallRmc(
 			# Correct by the actual Rmc
@@ -2448,56 +2457,56 @@ end
 		p = p_original
 		4π*p.ρ0*p.rs^3*(log(1 + r/p.rs)  - 1/(1 + p.rs/r))
 	end
-	gobs_true = (R -> u"G"*MNFW(R)/R^2 |> u"m/s^2").(R)
+	M_true = MNFW.(R)
 
 	do_asserts(;
-		R=R,
-		gobs_centered=gobs_centered,
-		gobs_true=gobs_true,
-		gobs_uncorrected=gobs_uncorrected,
-		gobs_corrected1=gobs_corrected1,
-		gobs_corrected2=gobs_corrected2,
-		gobs_corrected1_stat_err=gobs_corrected1_stat_err,
-		gobs_corrected2_stat_err=gobs_corrected2_stat_err,
+		R,
+		M_centered,
+		M_true,
+		M_uncorrected,
+		M_corrected1,
+		M_corrected2,
+		M_corrected1_stat_err,
+		M_corrected2_stat_err,
 	)
 
 	# Plots that show this visually
 	p1 = plot(
-		R, gobs_centered ./ gobs_true,
+		R, M_centered ./ M_true,
 		label="M reconst. original / M true", color=:black,
 		ylim=(:auto, 1.05)
 	)
 	plot!(p1, R,
-		gobs_corrected1 ./ gobs_true,
-		ribbon=gobs_corrected1_stat_err ./ gobs_true,
+		M_corrected1 ./ M_true,
+		ribbon=M_corrected1_stat_err ./ M_true,
 		label="M reconst. miscentered, corrected (Preprocess G) / M true", color=3, marker=:diamond, ms=2,
 	)
 	plot!(p1, R,
-		gobs_corrected2 ./ gobs_true,
-		# ribbon=gobs_corrected2_stat_err ./ gobs_true,
+		M_corrected2 ./ M_true,
+		# ribbon=M_corrected2_stat_err ./ M_true,
 		label="M reconst. miscentered, corrected / M true", color=4, marker=:diamond, ms=2,
 	)
 	plot!(p1,
-		R, gobs_uncorrected ./ gobs_true,
+		R, M_uncorrected ./ M_true,
 		label="M reconst. miscentered / M true", color=1, marker=:diamond, ms=2,
 	)
 	p2 = plot(
-		R, gobs_centered ./ gobs_true,
+		R, M_centered ./ M_true,
 		label="M reconst. original / M true", color=:black,
 		ylim=(:auto, 1.05)
 	)
 	plot!(p2, R,
-		gobs_corrected2 ./ gobs_true,
-		ribbon=gobs_corrected2_stat_err ./ gobs_true,
+		M_corrected2 ./ M_true,
+		ribbon=M_corrected2_stat_err ./ M_true,
 		label="M reconst. miscentered, corrected / M true", color=4, marker=:diamond, ms=2,
 	)
 	plot!(p2, R,
-		gobs_corrected1 ./ gobs_true,
-		# ribbon=gobs_corrected1_stat_err ./ gobs_true,
+		M_corrected1 ./ M_true,
+		# ribbon=M_corrected1_stat_err ./ M_true,
 		label="M reconst. miscentered, corrected (Preprocess G) / M true", color=3, marker=:diamond, ms=2,
 	)
 	plot!(p2,
-		R, gobs_uncorrected ./ gobs_true,
+		R, M_uncorrected ./ M_true,
 		label="M reconst. miscentered / M true", color=1, marker=:diamond, ms=2,
 	)
 	plot(p1, p2, layout=(2,1), size=(600, 400*2))
@@ -2506,34 +2515,34 @@ end
 # ╔═╡ 6945f330-a832-4a74-91df-a027206d536b
 @plutoonly do_NFW_miscentering_test(
 	Σcritfactor=1, interpolate=InterpolateLnR(2),
-	do_asserts = (; R, gobs_centered, gobs_true, gobs_uncorrected, gobs_corrected1, gobs_corrected2, gobs_corrected1_stat_err, gobs_corrected2_stat_err) -> let
+	do_asserts = (; R, M_centered, M_true, M_uncorrected, M_corrected1, M_corrected2, M_corrected1_stat_err, M_corrected2_stat_err) -> let
 		
 		# Assert some stuff
 		# 1) reconstruction works for correctly centered profile
-		@assert all(abs.(gobs_centered ./ gobs_true .- 1) .< 1e-6)
+		@assert all(abs.(M_centered ./ M_true .- 1) .< 1e-6)
 		# 2a) reconstruction _doesn't_ work for miscentered profile at small radii (>5%)
 		sel = R .< .5u"Mpc"
-		@assert all(abs.(gobs_uncorrected[sel] ./ gobs_true[sel] .- 1) .> .05)
+		@assert all(abs.(M_uncorrected[sel] ./ M_true[sel] .- 1) .> .05)
 		# 2b) at large radii it slowly gets better (naturally) (<1.5% here)
 		sel = R .> 1.0u"Mpc"
-		@assert all(abs.(gobs_uncorrected[sel] ./ gobs_true[sel] .- 1) .< .015)
+		@assert all(abs.(M_uncorrected[sel] ./ M_true[sel] .- 1) .< .015)
 		# 3a) Miscentering correction helps at small radii! (btter than 1.1%)
 		sel = R .< .5u"Mpc"
-		@assert all(abs.(gobs_corrected1[sel] ./ gobs_true[sel] .- 1) .< .011)
-		@assert all(abs.(gobs_corrected2[sel] ./ gobs_true[sel] .- 1) .< .011)
+		@assert all(abs.(M_corrected1[sel] ./ M_true[sel] .- 1) .< .011)
+		@assert all(abs.(M_corrected2[sel] ./ M_true[sel] .- 1) .< .011)
 		# 3b) Miscentering correction also helps at large radii (now permill!)
 		sel = R .> 1.0u"Mpc"
-		@assert all(abs.(gobs_corrected1[sel] ./ gobs_true[sel] .- 1) .< .001)
-		@assert all(abs.(gobs_corrected2[sel] ./ gobs_true[sel] .- 1) .< .001)
+		@assert all(abs.(M_corrected1[sel] ./ M_true[sel] .- 1) .< .001)
+		@assert all(abs.(M_corrected2[sel] ./ M_true[sel] .- 1) .< .001)
 	
-		# 4) Linearity in Rmc^2 means: Uncertainty in gobs induced by Rmc^2 = gobs[Rmc^2-Rmc^2] - gobs[Rmc^2=0]
-		@assert all(abs.(abs.(gobs_uncorrected .- gobs_corrected1) ./gobs_corrected1_stat_err .- 1) .< .01)
-		@assert all(abs.(abs.(gobs_uncorrected .- gobs_corrected2) ./gobs_corrected2_stat_err .- 1) .< .01)
+		# 4) Linearity in Rmc^2 means: Uncertainty in M induced by Rmc^2 = M[Rmc^2-Rmc^2] - M[Rmc^2=0]
+		@assert all(abs.(abs.(M_uncorrected .- M_corrected1) ./M_corrected1_stat_err .- 1) .< .01)
+		@assert all(abs.(abs.(M_uncorrected .- M_corrected2) ./M_corrected2_stat_err .- 1) .< .01)
 
 		# 5) Comparing `MiscenterCorrectSmallRmc` and `...PreprocessG` may
 		# give slightly different results b/c they are equivalent only up to terms of
 		# order κ(Rmc/R)^2 which can be permill stuff here
-		@assert all(abs.(gobs_corrected1 .- gobs_corrected2) ./ abs.(gobs_corrected1) .< 8e-3)
+		@assert all(abs.(M_corrected1 .- M_corrected2) ./ abs.(M_corrected1) .< 8e-3)
 	end
 )
 
@@ -2558,7 +2567,7 @@ md"""
 
 	Σcrit = 3000u"Msun/pc^2"
 	f = 1/Σcrit
-	res_interpR = calculate_gobs(
+	res_interpR = calculate_M(
 		R=R, G=G, f=f,
 		interpolate=InterpolateR(1),
 		extrapolate=ExtrapolatePowerDecay(1),
@@ -2567,7 +2576,7 @@ md"""
 			σ_Rmc²=(.16u"Mpc")^2
 		)
 	).(R./u"Mpc")
-	res_interpLnR = calculate_gobs(
+	res_interpLnR = calculate_M(
 		R=R, G=G, f=f,
 		interpolate=InterpolateLnR(1),
 		extrapolate=ExtrapolatePowerDecay(1),
@@ -2598,11 +2607,11 @@ end
 
 	R = collect(.4:.01:3.0) .* u"Mpc"
 
-	calc_gobs = (p, miscenter_correct) -> let 
+	calc_M = (p, miscenter_correct) -> let 
 		gt = __demo.calculate_azimuthally_averaged_gt.(R, Ref(p); Σcritinv=1/Σcrit)
 		f = 1/Σcrit
 		G = gt*Σcrit
-		res = calculate_gobs_and_covariance_in_bins(
+		res = calculate_M_and_covariance_in_bins(
 			R=R, G=G, f=f,
 			G_covariance=zeros(length(R), length(R)) .* u"(Msun/pc^2)^2",
 			interpolate=interpolate,
@@ -2610,12 +2619,12 @@ end
 			miscenter_correct=miscenter_correct
 		)
 
-		(res.gobs, res.gobs_stat_err)
+		(res.M, res.M_stat_err)
 	end
 
-	(gobs_centered, _) = calc_gobs(p_original, MiscenterCorrectNone())
-	(gobs_uncorrected, _) = calc_gobs(p_miscentered, MiscenterCorrectNone())
-	(gobs_corrected1, gobs_corrected1_stat_err) = calc_gobs(
+	(M_centered, _) = calc_M(p_original, MiscenterCorrectNone())
+	(M_uncorrected, _) = calc_M(p_miscentered, MiscenterCorrectNone())
+	(M_corrected1, M_corrected1_stat_err) = calc_M(
 		p_miscentered,
 		MiscenterCorrectSmallRmcPreprocessG(
 			# Correct by the actual Rmc
@@ -2624,7 +2633,7 @@ end
 			σ_Rmc²=(.16u"Mpc")^2
 		)
 	)
-	(gobs_corrected2, gobs_corrected2_stat_err) = calc_gobs(
+	(M_corrected2, M_corrected2_stat_err) = calc_M(
 		p_miscentered,
 		MiscenterCorrectSmallRmc(
 			# Correct by the actual Rmc
@@ -2633,56 +2642,56 @@ end
 			σ_Rmc²=(.16u"Mpc")^2
 		)
 	)
-	gobs_true = (R -> (u"G"/R^2)*R*4e14u"Msun"/1u"Mpc" |> u"m/s^2").(R)
+	M_true = (R -> R*4e14u"Msun"/1u"Mpc" |> u"Msun").(R)
 
 	do_asserts(;
-		R=R,
-		gobs_centered=gobs_centered,
-		gobs_true=gobs_true,
-		gobs_uncorrected=gobs_uncorrected,
-		gobs_corrected1=gobs_corrected1,
-		gobs_corrected2=gobs_corrected2,
-		gobs_corrected1_stat_err=gobs_corrected1_stat_err,
-		gobs_corrected2_stat_err=gobs_corrected2_stat_err,
+		R,
+		M_centered,
+		M_true,
+		M_uncorrected,
+		M_corrected1,
+		M_corrected2,
+		M_corrected1_stat_err,
+		M_corrected2_stat_err,
 	)
 
 	# Plots that show this visually
 	p1 = plot(
-		R, gobs_centered ./ gobs_true,
+		R, M_centered ./ M_true,
 		label="M reconst. original / M true", color=:black,
 		ylim=(:auto, 1.05)
 	)
 	plot!(p1, R,
-		gobs_corrected1 ./ gobs_true,
-		ribbon=gobs_corrected1_stat_err ./ gobs_true,
+		M_corrected1 ./ M_true,
+		ribbon=M_corrected1_stat_err ./ M_true,
 		label="M reconst. miscentered, corrected (Preprocess G) / M true", color=3, marker=:diamond, ms=2,
 	)
 	plot!(p1, R,
-		gobs_corrected2 ./ gobs_true,
-		# ribbon=gobs_corrected2_stat_err ./ gobs_true,
+		M_corrected2 ./ M_true,
+		# ribbon=M_corrected2_stat_err ./ M_true,
 		label="M reconst. miscentered, corrected / M true", color=4, marker=:diamond, ms=2,
 	)
 	plot!(p1,
-		R, gobs_uncorrected ./ gobs_true,
+		R, M_uncorrected ./ M_true,
 		label="M reconst. miscentered / M true", color=1, marker=:diamond, ms=2,
 	)
 	p2 = plot(
-		R, gobs_centered ./ gobs_true,
+		R, M_centered ./ M_true,
 		label="M reconst. original / M true", color=:black,
 		ylim=(:auto, 1.05)
 	)
 	plot!(p2, R,
-		gobs_corrected2 ./ gobs_true,
-		ribbon=gobs_corrected2_stat_err ./ gobs_true,
+		M_corrected2 ./ M_true,
+		ribbon=M_corrected2_stat_err ./ M_true,
 		label="M reconst. miscentered, corrected / M true", color=4, marker=:diamond, ms=2,
 	)
 	plot!(p2, R,
-		gobs_corrected1 ./ gobs_true,
-		# ribbon=gobs_corrected1_stat_err ./ gobs_true,
+		M_corrected1 ./ M_true,
+		# ribbon=M_corrected1_stat_err ./ M_true,
 		label="M reconst. miscentered, corrected (Preprocess G) / M true", color=3, marker=:diamond, ms=2,
 	)
 	plot!(p2,
-		R, gobs_uncorrected ./ gobs_true,
+		R, M_uncorrected ./ M_true,
 		label="M reconst. miscentered / M true", color=1, marker=:diamond, ms=2,
 	)
 	plot(p1, p2, layout=(2,1), size=(600, 400*2))
@@ -2691,33 +2700,33 @@ end
 # ╔═╡ 8f2f297f-49b9-4dba-bb52-3868019aa1ea
 @plutoonly do_miscentering_test(
 	Σcritfactor=1, interpolate=InterpolateR(2),
-	do_asserts = (; R, gobs_centered, gobs_true, gobs_uncorrected, gobs_corrected1, gobs_corrected2, gobs_corrected1_stat_err, gobs_corrected2_stat_err) -> let
+	do_asserts = (; R, M_centered, M_true, M_uncorrected, M_corrected1, M_corrected2, M_corrected1_stat_err, M_corrected2_stat_err) -> let
 		# Assert some stuff
 		# 1) reconstruction works for correctly centered profile (permill)
-		@assert all(abs.(gobs_centered ./ gobs_true .- 1) .< .003)
+		@assert all(abs.(M_centered ./ M_true .- 1) .< .003)
 		# 2a) reconstruction _doesn't_ work for miscentered profile at small radii (>5%)
 		sel = R .< .5u"Mpc"
-		@assert all(abs.(gobs_uncorrected[sel] ./ gobs_true[sel] .- 1) .> .05)
+		@assert all(abs.(M_uncorrected[sel] ./ M_true[sel] .- 1) .> .05)
 		# 2b) at large radii it slowly gets better (naturally) (<1.5% here)
 		sel = R .> 1.0u"Mpc"
-		@assert all(abs.(gobs_uncorrected[sel] ./ gobs_true[sel] .- 1) .< .015)
+		@assert all(abs.(M_uncorrected[sel] ./ M_true[sel] .- 1) .< .015)
 		# 3a) Miscentering correction helps at small radii! (btter than 1.1%)
 		sel = R .< .5u"Mpc"
-		@assert all(abs.(gobs_corrected1[sel] ./ gobs_true[sel] .- 1) .< .011)
-		@assert all(abs.(gobs_corrected2[sel] ./ gobs_true[sel] .- 1) .< .015) # slightly worse?
+		@assert all(abs.(M_corrected1[sel] ./ M_true[sel] .- 1) .< .011)
+		@assert all(abs.(M_corrected2[sel] ./ M_true[sel] .- 1) .< .015) # slightly worse?
 		# 3b) Miscentering correction also helps at large radii (now permill!)
 		sel = R .> 1.0u"Mpc"
-		@assert all(abs.(gobs_corrected1[sel] ./ gobs_true[sel] .- 1) .< .003)
-		@assert all(abs.(gobs_corrected2[sel] ./ gobs_true[sel] .- 1) .< .003)
+		@assert all(abs.(M_corrected1[sel] ./ M_true[sel] .- 1) .< .003)
+		@assert all(abs.(M_corrected2[sel] ./ M_true[sel] .- 1) .< .003)
 	
-		# 4) Linearity in Rmc^2 means: Uncertainty in gobs induced by Rmc^2 = gobs[Rmc^2-Rmc^2] - gobs[Rmc^2=0]
-		@assert all(abs.(abs.(gobs_uncorrected .- gobs_corrected1) ./gobs_corrected1_stat_err .- 1) .< .01)
-		@assert all(abs.(abs.(gobs_uncorrected .- gobs_corrected2) ./gobs_corrected2_stat_err .- 1) .< .01)
+		# 4) Linearity in Rmc^2 means: Uncertainty in M induced by Rmc^2 = M[Rmc^2-Rmc^2] - M[Rmc^2=0]
+		@assert all(abs.(abs.(M_uncorrected .- M_corrected1) ./M_corrected1_stat_err .- 1) .< .01)
+		@assert all(abs.(abs.(M_uncorrected .- M_corrected2) ./M_corrected2_stat_err .- 1) .< .01)
 
 		# 5) Comparing `MiscenterCorrectSmallRmc` and `...PreprocessG` may
 		# give slightly different results b/c they are equivalent only up to terms of
 		# order κ(Rmc/R)^2 which can be permill stuff here
-		@assert all(abs.(gobs_corrected1 .- gobs_corrected2) ./ abs.(gobs_corrected1) .< 8e-3)
+		@assert all(abs.(M_corrected1 .- M_corrected2) ./ abs.(M_corrected1) .< 8e-3)
 	end
 )
 
@@ -2725,10 +2734,10 @@ end
 @plutoonly do_miscentering_test(
 	# This makes κ very small.
 	Σcritfactor=1_000, interpolate=InterpolateR(2),
-	do_asserts = (; R, gobs_centered, gobs_true, gobs_uncorrected, gobs_corrected1, gobs_corrected2, gobs_corrected1_stat_err, gobs_corrected2_stat_err) -> let
+	do_asserts = (; R, M_centered, M_true, M_uncorrected, M_corrected1, M_corrected2, M_corrected1_stat_err, M_corrected2_stat_err) -> let
 		# In this case, `MiscenterCorrectSmallRmc` and `...PreprocessG` 
 		# should be identical (they are mathematically equivalent in this case).
-		@assert all(abs.(gobs_corrected1 .- gobs_corrected2) ./ abs.(gobs_corrected1) .< 4e-5)
+		@assert all(abs.(M_corrected1 .- M_corrected2) ./ abs.(M_corrected1) .< 4e-5)
 	end
 )
 
@@ -2749,9 +2758,9 @@ end
 	#     calculates are discontinuous? Not sure. But I tried a lot of things and
 	#     nothing else had any effect.
 	Σcritfactor=1, interpolate=InterpolateR(1),
-	do_asserts = (; R, gobs_centered, gobs_true, gobs_uncorrected, gobs_corrected1, gobs_corrected2, gobs_corrected1_stat_err, gobs_corrected2_stat_err) -> let
-		@assert all(abs.(gobs_corrected1 ./ gobs_true .- 1) .< .02)
-		@assert all(abs.(gobs_corrected2 ./ gobs_true .- 1) .< .02)
+	do_asserts = (; R, M_centered, M_true, M_uncorrected, M_corrected1, M_corrected2, M_corrected1_stat_err, M_corrected2_stat_err) -> let
+		@assert all(abs.(M_corrected1 ./ M_true .- 1) .< .02)
+		@assert all(abs.(M_corrected2 ./ M_true .- 1) .< .02)
 	end
 )
 

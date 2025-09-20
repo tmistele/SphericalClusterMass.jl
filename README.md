@@ -30,7 +30,7 @@ The following code calculates (a form of) the deprojected mass profile and the a
 
 ```julia
 R=[.2, .5, .7] .* u"Mpc"
-result = calculate_gobs_and_covariance_in_bins(
+result = calculate_M_and_covariance_in_bins(
     # Observational data.
     R=R,
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
@@ -52,16 +52,13 @@ result = calculate_gobs_and_covariance_in_bins(
 
 This will run for a few seconds on the first run to compile the code.
 Subsequent runs will be fast, unless the number of data points changes, which requires recompilation.
-`result` is a named tuple with fields `gobs`, `gobs_stat_cov` and `gobs_stat_err` where `gobs` refers to the acceleration $G M(r) /r^2$.
+`result` is a named tuple with fields `M`, `M_stat_cov` and `M_stat_err` where `M` refers to the enclosed 3D mass $M(r)$.
 The deprojected mass $M$ and its statistical uncertainties and covariance matrix can be inferred from this.
 For example,
 
 ```julia
-M = result.gobs .* R .^ 2 ./ u"G" .|> u"Msun"
-M_stat_err = result.gobs_stat_err .* R .^ 2 ./ u"G" .|> u"Msun"
-
 using Plots
-plot(R, M, yerror=M_stat_err)
+plot(R, result.M, yerror=result.M_stat_err)
 ```
 
 ### Faster calculation assuming constant $f_c$
@@ -71,7 +68,7 @@ A constant $f_c$ makes the calculation simpler and faster.
 This faster calculation will automatically be done if $f_c$ is passed as a scalar instead of a vector,
 
 ```julia
-result = calculate_gobs_and_covariance_in_bins(
+result = calculate_M_and_covariance_in_bins(
     R=R,
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
     f=1e-3 * .9 / u"Msun/pc^2", # <-- This is now a scalar instead of a vector
@@ -83,10 +80,10 @@ result = calculate_gobs_and_covariance_in_bins(
 
 ### Faster calculation without covariance matrix
 
-If one is not interested in the statistical uncertainties and covariances, one can use `calculate_gobs`
+If one is not interested in the statistical uncertainties and covariances, one can use `calculate_M`
 
 ```julia
-result = calculate_gobs(
+result = calculate_M(
     R=R,
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
     f=1e-3 .* [.9, .9, .9] ./ u"Msun/pc^2",
@@ -98,7 +95,7 @@ result = calculate_gobs(
 If one has $f_c = \mathrm{const}$, one can also pass `f` as a scalar
 
 ```julia
-result = calculate_gobs(
+result = calculate_M(
     R=R,
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
     f=1e-3 * .9 / u"Msun/pc^2", # <-- This is now a scalar instead of a vector
@@ -112,7 +109,7 @@ result = calculate_gobs(
 To correct for miscentering (to leading order in $R_{\mathrm{mc}}/R$ where $R_{\mathrm{mc}}$ is the miscentering radius), you can use the `miscenter_correct` argument:
 
 ```julia
-result = calculate_gobs_and_covariance_in_bins(
+result = calculate_M_and_covariance_in_bins(
     R=R,
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
     f=1e-3 .* [.9, .9, .9] ./ u"Msun/pc^2",
@@ -140,7 +137,7 @@ result = calculate_gobs_and_covariance_in_bins(
 )
 ```
 
-The function `calculate_gobs` also supports the `miscenter_correct` argument.
+The function `calculate_M` also supports the `miscenter_correct` argument.
 
 ### Extrapolate assuming NFW profile
 
@@ -150,7 +147,7 @@ For now, only one relation from Maccio et al. 2008 is supported, but others can 
 ```julia
 h=.7
 ρcrit = 1.85e11u"Msun/Mpc^3"
-result = calculate_gobs_and_covariance_in_bins(
+result = calculate_M_and_covariance_in_bins(
     R=R,
     G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
     f=1e-3 .* [.9, .9, .9] ./ u"Msun/pc^2",
