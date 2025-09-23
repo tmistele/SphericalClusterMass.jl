@@ -1240,6 +1240,21 @@ const NFW_find_rs_ρs_from_last_Gf = let
 	function(cm::CM; Gf_NFW_func, GfTail, Rtail) where {
 		CM <: AbstractMassConcentrationRelation
 	}
+		# What to do if the last shear data point is negative?
+		# The standard NFW mass-concentration relation is defined
+		# only for *positive* masses which give *positive* shear.
+		# 
+		# Very simple option implemented here:
+		# - we match NFW to |Gf(Rmax)| which is always positive
+		# - we give ρs the sign of Gf(Rmax)
+		# 
+		# Nice property: If we have a shear which is scattered around zero,
+		# it gives, on average, a zero reconstructed mass.
+		# (for non-zero signal it doesn't work quite as nicely because the NFW
+		#  matching is non-linear.)
+		sign_GfTail = sign(GfTail)
+		abs_GfTail = abs(GfTail)
+		
 		# Find M200 from ΔΣ_NFW(Rmax|M200) = ΔΣ_measured(Rmax)
 		get_rs_ρs = M200 -> let
 			# Use c-M relation
@@ -1256,7 +1271,7 @@ const NFW_find_rs_ρs_from_last_Gf = let
 				Gf_NFW_tail = Gf_NFW_func(Rtail; ρs, rs)
 				Gf_NFW_tail > 0 || return 100.0 # Something larger than 1
 				Gf_NFW_tail < 1 || return 10.0 
-				Gf_NFW_tail  - GfTail
+				Gf_NFW_tail  - abs_GfTail # match to |Gf(Rmax)|, see text above
 			end,
 			(10, 17), # (10^10 -- 10^17) Msun should cover everything realistic
 			# Roots.Bisection() gives all-zeros for ForwardDiff! So use A42...
@@ -1264,12 +1279,10 @@ const NFW_find_rs_ρs_from_last_Gf = let
 			Roots.A42()
 		)
 
-		get_rs_ρs(10 ^ log10_M200_matched * u"Msun")
+		(rs, ρs) = get_rs_ρs(10 ^ log10_M200_matched * u"Msun")
+
+		(rs, sign_GfTail*ρs #= sign of Gf(Rmax), see text above =#)
 	end
-
-	# TODO: How to handle negative last ΔΣ data point?
-	# TODO: How to handle unrealistic (fluctuated) last ΔΣ data point?
-
 end
 
 # ╔═╡ ea9fc39e-ba29-4502-927f-d2ca77e3b4e7
@@ -2197,6 +2210,93 @@ md"""
 	plot!(xscale=:log10, ylabel="M_reconstructed/M_true")
 end
 
+# ╔═╡ 165969aa-7978-453c-b497-ecc763aed249
+@plutoonly let
+	# Test: NFW reconstruction with last data point fluctuated negative
+	#       (for ease of checking: fluctuated to be exactly -1 of the NFW value)
+
+	cosmo = Cosmology.cosmology(h=.7, OmegaM=.3)
+	zl = .3
+	H = Cosmology.H(cosmo, zl)
+	ρcrit = 3*H^2/(8π*u"G") |> u"Msun/Mpc^3"
+	nfw = let
+		cm = CMRelationMaccio2008(ρcrit, cosmo.h) 
+		ExtrapolateNFW(cm)
+	end
+	
+	# Choose ρ0 / rs that matches mass-concentration relation below
+	M200 = 1e15u"Msun"
+	# According to Maccio et al that's (Li2020 formulas with sign fixed)
+	c200 = 10^(.83 - .098*log10(M200*cosmo.h/(1e12u"Msun")) )
+	r200 = ( M200 / ( (4π/3) * 200 * ρcrit))^(1/3)
+	rs = r200/c200
+	ρ0 = M200/(4π*rs^3)/(log(1+c200) - c200/(1+c200))
+	
+	p = __demo.ProfileNFW(; ρ0, rs, x0=.0u"Mpc", y0=.0u"Mpc")
+	Σcrit=2500u"Msun/pc^2"
+	Gt = R -> __demo.calculate_azimuthally_averaged_gt(R, p; Σcritinv=1/Σcrit) * Σcrit
+
+	# Mass we reconstruct from shear
+	R = (.2:.04:10 |> collect) .* u"Mpc"
+	G = Gt.(R)
+	
+	# THIS IS WHERE THE NEGATIVE THING ENTERS: Give the last data point a minus
+	G[end] *= -1
+	
+	f = 1/Σcrit
+	M_reconstructed = extrapolate -> calculate_M(;
+		G, f, R,
+		interpolate=InterpolateLnR(2),
+		extrapolate=extrapolate
+	).(R ./ u"Mpc")
+
+	# Actual mass
+	MNFW(r) = 4π*p.ρ0*p.rs^3*(log(1 + r/p.rs)  - 1/(1 + p.rs/r))
+
+	power1 = ExtrapolatePowerDecay(1)
+	power2 = ExtrapolatePowerDecay(2)
+	plot(R,
+		 M_reconstructed(power1) ./ MNFW.(R),
+		 c=:gray, ls=:dash, label="reconstructed 1/R extrapolate",
+		 title="NFW reconstruction with negative last G data point"
+		)
+	plot!(R,
+		  M_reconstructed(power2) ./ MNFW.(R),
+		  c=:gray, ls=:dash, label="reconstruted 1/R² extrapolate")
+
+	let
+		# Check the (rs, ρs) parameters. They _should_ be pretty good given we
+		# make NFW without noise here.
+		@info "underlying params" p.rs p.ρ0 M200 c200
+		(check_rs, check_ρs) = NFW_find_rs_ρs_from_last_Gf(
+			nfw.cm; GfTail=G[end]*f, Rtail=maximum(R),
+			Gf_NFW_func=(R; rs, ρs) -> Gf_NFW(R; rs, ρs, f∞=f)
+		)
+		@info "matched params from last Gf data point" (check_rs, check_ρs)
+		@assert abs(check_rs/p.rs - 1) < 1e-15
+		@assert abs(check_ρs/p.ρ0 - (-1)) < 1e-15
+	end
+
+	let
+		# We should be good at "small" radii with SIS extrapolation
+		sel = R .< 2u"Mpc" # Regime where extrapolation plays no role
+		@assert all(abs.(M_reconstructed(power1) ./ MNFW.(R) .- 1)[sel] .< 1.1e-2)
+		
+		# We should be similarly good with NFW extarpolation (not perfect
+		# b/c I made last data point negative!)
+		@assert all(abs.(M_reconstructed(nfw) ./ MNFW.(R) .- 1)[sel] .< 1.1e-2)
+
+		# _Last_ data point should be very close to minus the actual mass
+		@assert all(abs.(M_reconstructed(nfw) ./ MNFW.(R) .- (-1))[end] .< 1e-11)
+	end
+	
+	plot!(R,
+		  M_reconstructed(nfw) ./ MNFW.(R),
+		  c=1, ls=:dash, label="reconstructed NFW extrapolate")
+	
+	plot!(xscale=:log10, ylabel="M_reconstructed/M_true")
+end
+
 # ╔═╡ bf00d853-5a7e-4509-aa2b-4318dde040e1
 @plutoonly let
 	# Test: When reconstructing ΔΣ from G, different extrapolation choices
@@ -2922,6 +3022,7 @@ end
 # ╠═cda4a385-3c68-430d-8e86-abd54374dffa
 # ╟─044926fb-bdf1-4221-905e-de2c04946709
 # ╠═81c1fde2-c7fa-456b-b720-52f0358ffa27
+# ╟─165969aa-7978-453c-b497-ecc763aed249
 # ╠═bf00d853-5a7e-4509-aa2b-4318dde040e1
 # ╠═072cf58f-902f-4ca8-aec2-be425f3ad547
 # ╠═6945f330-a832-4a74-91df-a027206d536b
