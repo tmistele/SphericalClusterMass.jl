@@ -1139,7 +1139,7 @@ module __demo
 	end
 end
 
-# ╔═╡ d872bd18-384e-42cd-9979-be72f8e82b05
+# ╔═╡ 8193ca3f-749d-4734-b2c9-9db46a0458c0
 const Gf_NFW_approx_miscentering_applied = let
 
 	# That's a helper function defined as
@@ -1148,32 +1148,152 @@ const Gf_NFW_approx_miscentering_applied = let
 	#   Gf_NFW(R) = fc*(2rsρs)*(g(x=r/Rs) - f(...))/(1 - f_c * (2rsρs) * f(...))
 	# So we have:
 	#   Gf_NFW(R) = H(ln(R/rs); p=f_c*2rsρs)
-	H(lnx; p) = let
-		x = exp(lnx)
-		p*(gNFW(x) - fNFW(x)) / (1 - p*fNFW(x))
+	#
+	# We need H''(lnx; p).
+	# 
+	# We could just let ForwardDiff.jl calculate this (and it's actually not
+	# horrible, we had this in a previous version). But we can speed this part
+	# up a lot by actually working out the explicit formulas.
+	# Formulas from Mathematica, see `faster-NFW-miscentering-formulas.nb`
+	∂_lnx_fNFW(x) = let
+		sq = sqrt(abs((x-1)/(x+1)))
+		if x < 1
+			-(
+				(x-1)*(1+2x^2) + 6x^2*sq*atanh(sq)
+			) / (
+				(1+x)^2*(-1+x)^3
+			)
+		else
+			-(1+2x^2)/(-1+x^2)^2 + 6x^2*atan(sq)/(x^2-1)^(5/2)
+		end
 	end
-	dH(lnx; p) = ForwardDiff.derivative(lny -> H(lny; p), lnx)
-	d²H(lnx; p) = if abs(lnx) < 1e-3
-		# Mathematica
-		4p*(
+
+	∂²_lnx_fNFW(x) = let
+		sq = sqrt(abs((x-1)/(x+1)))
+		x^2 * if x < 1
+			(
+				(x-1)*(11+4x^2)
+				+6*(2+3x^2)*sq*atanh(sq)
+			) / (
+				(1+x)^3*(x-1)^4
+			)
+		else
+			(11+4x^2)/(x^2-1)^3 - 6*(2+3x^2)*atan(sq)/(x^2-1)^(7/2)
+		end
+	end
+
+	∂_lnx_gNFW(x) = let
+		sq = sqrt(abs((x-1)/(x+1)))
+		sq_atan_sq = if x < 1
+			-sq*atanh(sq)
+		else
+			sq*atan(sq)
+		end
+		(
+			4*(2-3x^2)*sq_atan_sq + 2*(x-1)*(
+				x^2+
+				(x^2-1)*log(4)
+				-2(x^2-1)*log(x)
+			)
+		) / (
+			(x-1)^2*x^2*(1+x)
+		)
+	end
+
+	∂²_lnx_gNFW(x) = let
+		sq = sqrt(abs((x-1)/(x+1)))
+		sq_atan_sq = if x < 1
+			-sq*atanh(sq)
+		else
+			sq*atan(sq)
+		end
+		(
+			4*sq_atan_sq*(4-10x^2+9x^4)+
+			+2*(x-1)*(x^2-4x^4+4*(-1+x^2)^2*log(x/2))
+		) / (
+			(x-1)*x^2*(x^2-1)^2
+		)
+	end
+
+	∂²_lnx_H(x; p) = if abs(x-1) < 1e-2
+		# This becomes numerically tricky for x close to 1.
+		# So just use linear Taylor expansion there
+		a = 4p*(
 			-6525 + 903p - 206p^2 +
 			9450log(2) - 1710p*log(2) + 276p^2*log(2)
 		)/( 175(-3 + p)^3)
+		b = 16p*(
+			675(-72+35*log(8))
+			+ p*(
+				(5310-5889p+338p^2)
+				+ (-3150+(2325-166p)p)*log(8)
+			)
+		) / (875*(p-3)^4)
+		a + b*log(x)
 	else
-		# This here is numerically tricky for lnx very close to 0.
-		# So don't use it then.
-		# The lnx=0 analytical result from Mathematica should be a good approximation
-		# already for |ln x| < 1e-3.
-		ForwardDiff.derivative(lny -> dH(lny; p), lnx)
+		df = ∂_lnx_fNFW(x)
+		dg = ∂_lnx_gNFW(x)
+		
+		d²f = ∂²_lnx_fNFW(x)
+		d²g = ∂²_lnx_gNFW(x)
+		
+		A = gNFW(x) - fNFW(x)
+		B = fNFW(x)
+
+		dA = dg - df
+		dB = df
+
+		d²A = d²g - d²f
+		d²B = d²f
+		
+		(
+			2p^2*dA*dB/(1-p*B)^2
+			+ 2p^3*A*dB^2/(1-p*B)^3
+			+ p*d²A/(1 - p*B)
+			+ p^2*A*d²B/(1-p*B)^2
+		)
 	end
 
 	@plutoonly let
-		@assert abs(d²H(0.0; p=.5)/0.087459 - 1) < 1e-5
-		@assert abs(d²H(0.0; p=.9)/0.534694 - 1) < 1e-5
-		@assert abs(d²H(1e-3; p=.9)/0.534694 - 1) < 1e-2
-		@assert abs(d²H(1e-4; p=.9)/0.534694 - 1) < 1e-4
-		@assert abs(d²H(-1e-3; p=.9)/0.534694 - 1) < 1e-2
-		@assert abs(d²H(-1e-4; p=.9)/0.534694 - 1) < 1e-4
+		@assert abs(∂_lnx_fNFW(.1)/(-0.948628645550817) - 1) < 1e-15
+		@assert abs(∂_lnx_fNFW(1.1)/(-0.3677094931729954) - 1) < 1e-15
+		
+		# TODO: Why is this one so much worse?
+		@assert abs(∂_lnx_gNFW(.1)/(-0.970774460018575) - 1) < 1e-12
+		@assert abs(∂_lnx_gNFW(1.1)/(-0.5299439541930584) - 1) < 1e-15
+
+		@assert abs(∂²_lnx_fNFW(.1)/0.07503419144630517 - 1) < 1e-15
+		@assert abs(∂²_lnx_fNFW(1.1)/0.3343068883999718 - 1) < 1e-15
+
+		# TODO: Why is this one so much worse?
+		@assert abs(∂²_lnx_gNFW(.1)/0.04429162893533274 - 1) < 1e-11
+		@assert abs(∂²_lnx_gNFW(1.1)/0.3244689220401106 - 1) < 1e-15
+
+		f = lnx -> fNFW(exp(lnx))
+		d_lnx_f(lnx) = ForwardDiff.derivative(f, lnx)
+		dd_lnx_f(lnx) = ForwardDiff.derivative(d_lnx_f, lnx)
+		@assert abs(d_lnx_f(log(.2)) / ∂_lnx_fNFW(.2) - 1) < 1e-15
+		@assert abs(d_lnx_f(log(1.2)) / ∂_lnx_fNFW(1.2) - 1) < 1e-14
+		@assert abs(dd_lnx_f(log(.2))/ ∂²_lnx_fNFW(.2) - 1) < 1e-15
+		@assert abs(dd_lnx_f(log(1.2))/ ∂²_lnx_fNFW(1.2) - 1) < 1e-13
+	
+		g = lnx -> gNFW(exp(lnx))
+		d_lnx_g(lnx) = ForwardDiff.derivative(g, lnx)
+		dd_lnx_g(lnx) = ForwardDiff.derivative(d_lnx_g, lnx)
+		@assert abs(d_lnx_g(log(.2)) / ∂_lnx_gNFW(.2) - 1) < 1e-13
+		@assert abs(d_lnx_g(log(1.2)) / ∂_lnx_gNFW(1.2) - 1) < 1e-14
+		@assert abs(dd_lnx_g(log(.2))/ ∂²_lnx_gNFW(.2) - 1) < 1e-12
+		@assert abs(dd_lnx_g(log(1.2))/ ∂²_lnx_gNFW(1.2) - 1) < 1e-13
+	
+		H(lnx; p) = let
+			x = exp(lnx)
+			p*(gNFW(x) - fNFW(x)) / (1 - p*fNFW(x))
+		end
+		dH(lnx; p) = ForwardDiff.derivative(lny -> H(lny; p), lnx)
+		d²H(lnx; p) = ForwardDiff.derivative(lny -> dH(lny; p), lnx)
+	
+		@assert abs(∂²_lnx_H(.1; p=.2)/d²H(log(.1); p=.2) - 1) < 1e-11
+		@assert abs(∂²_lnx_H(1.1; p=.2)/d²H(log(1.1); p=.2) - 1) < 1e-11
 	end
 
 	# This is:
@@ -1189,7 +1309,7 @@ const Gf_NFW_approx_miscentering_applied = let
 		Gf = Gf_NFW(R; rs, ρs, f∞)
 
 		fc2rsρs = f∞*2*rs*ρs |> NoUnits
-		∂_terms = d²H(log(R/rs); p=fc2rsρs)
+		∂_terms = ∂²_lnx_H(R/rs; p=fc2rsρs)
 
 		Gf - (1/4) * (Rmc²/R^2) * (4*Gf - ∂_terms)
 	end
@@ -1211,7 +1331,7 @@ end
 		Rmc²=(.2u"Mpc")^2, rs=1.0u"Mpc", ρs=1e14u"Msun/Mpc^3", f∞=1e-3/u"Msun/pc^2"
 	)
 	# From Mathematica at rs=R, where things are tricky
-	@assert abs(test2/0.0577428-1) < 2e-3
+	@assert abs(test2/0.0577428-1) < 1e-6
 end
 
 # ╔═╡ f42c2a3a-ac7f-45cd-84dc-8eccd147ccab
@@ -2995,7 +3115,7 @@ end
 # ╟─fa506a97-1c00-488d-a4d1-18b878bc3640
 # ╠═6f593629-bd08-44ad-8941-54c95f131908
 # ╠═0134ff7b-b627-4016-9a4b-d686207111b3
-# ╠═d872bd18-384e-42cd-9979-be72f8e82b05
+# ╠═8193ca3f-749d-4734-b2c9-9db46a0458c0
 # ╠═ae4b04aa-f4a2-4060-89a6-211eb40a1808
 # ╠═f42c2a3a-ac7f-45cd-84dc-8eccd147ccab
 # ╟─ea9fc39e-ba29-4502-927f-d2ca77e3b4e7
