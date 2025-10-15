@@ -1393,7 +1393,7 @@ const NFW_find_rs_ρs_from_last_Gf = let
 				Gf_NFW_tail < 1 || return 10.0 
 				Gf_NFW_tail  - abs_GfTail # match to |Gf(Rmax)|, see text above
 			end,
-			(10, 17), # (10^10 -- 10^17) Msun should cover everything realistic
+			(8, 19), # (10^8 -- 10^19) Msun should cover everything realistic
 			# Roots.Bisection() gives all-zeros for ForwardDiff! So use A42...
 			# https://discourse.julialang.org/t/autodiff-ing-a-function-defined-by-the-result-of-roots-find-zero-fails/87753/3
 			Roots.A42()
