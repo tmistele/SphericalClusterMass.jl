@@ -1825,7 +1825,7 @@ function calculate_M_and_covariance_in_bins(;
 	# Covariance matrix matching this input
 	input_cov = zeros(length(G)+1, length(G)+1)
 	input_cov[1:end-1, 1:end-1] = G_covariance ./ u"(Msun/pc^2)^2"
-	input_cov[end] = __get_σ_Rmc²(miscenter_correct)^2 / u"(Mpc^2)^2"
+	input_cov[end, end] = __get_σ_Rmc²(miscenter_correct)^2 / u"(Mpc^2)^2"
 
 	RMpc = R ./ u"Mpc" .|> NoUnits
 
@@ -1864,8 +1864,29 @@ function calculate_M_and_covariance_in_bins(;
 	# (and _not_ transpose(jac) * Cov * jac)
 	M_stat_cov = jac * input_cov * jac' .* u"Msun^2"
 	M_stat_err = sqrt.(diag(M_stat_cov))
+
+	# When stacking multiple lenses one may want to weigh by 1/M_stat_err².
+	# But: It's good to _not_ include the contributions from σ_Rmc² in that
+	# M_stat_err in that case so as to ensure optimal cancellation of the shape noise
+	# and also one doesn't want to negate the miscentering correction by just down-
+	# -weighing everything that is miscentered.
+	# In order for these to not have to calculate twice (once with and once without
+	# σ_Rmc², we provide both versions here).
+	M_stat_err_without_σ_Rmc² = if __get_σ_Rmc²(miscenter_correct) != 0.0u"Mpc^2"
 		
-	(M=M, M_stat_cov=M_stat_cov, M_stat_err=M_stat_err)
+		# Since this is the very last thing we do, we can over-write `input_cov`
+		input_cov[end, end] = 0
+		
+		M_stat_cov_without_σ_Rmc² = jac * input_cov * jac' .* u"Msun^2"
+		sqrt.(diag(M_stat_cov_without_σ_Rmc²))
+	else
+		M_stat_err
+	end
+		
+	(
+		M=M, M_stat_cov=M_stat_cov, M_stat_err=M_stat_err,
+		M_stat_err_without_σ_Rmc²=M_stat_err_without_σ_Rmc²
+	)
 end
 
 # ╔═╡ f4311bdf-db19-4886-93f2-51143e6845bc
@@ -2809,6 +2830,50 @@ md"""
 	@assert all(abs.(res_interpR ./ res_interpLnR .- 1) .< .0042) "R and ln R interpolations should agree well for small bins"
 end
 
+# ╔═╡ 5c9e62b4-f18c-4038-9e77-312ba057f057
+@plutoonly let
+	R = (.4:.2:3.0) .* u"Mpc" |> collect
+	Gfunc = R -> 300u"Msun/pc^2" / (R/u"Mpc") |> u"Msun/pc^2"
+	G = Gfunc.(R)
+	Σcrit = 3000u"Msun/pc^2"
+	f = 1/Σcrit
+	
+	# Check that the M_stat_err variant without σ_Rmc² contributions works
+	res_with_cov = calculate_M_and_covariance_in_bins(;
+		R, G, f,
+		G_covariance=LinearAlgebra.diagm((.1 .* G).^2),
+		interpolate=InterpolateR(1),
+		extrapolate=ExtrapolatePowerDecay(1),
+		miscenter_correct=MiscenterCorrectSmallRmc(
+			Rmc²=(.16u"Mpc")^2,
+			σ_Rmc²=(.16u"Mpc")^2
+		)
+	)
+	res_with_cov_no_σ_Rmc² = calculate_M_and_covariance_in_bins(;
+		R, G, f,
+		G_covariance=LinearAlgebra.diagm((.1 .* G).^2),
+		interpolate=InterpolateR(1),
+		extrapolate=ExtrapolatePowerDecay(1),
+		miscenter_correct=MiscenterCorrectSmallRmc(
+			Rmc²=(.16u"Mpc")^2,
+			σ_Rmc²=(.0u"Mpc")^2
+		)
+	)
+
+	# Super stupid smoke checks
+	@assert all(res_with_cov.M_stat_err .> 0u"Msun")
+	@assert all(res_with_cov.M_stat_err_without_σ_Rmc² .> 0u"Msun")
+	
+	# Another smoke test: σ_Rmc² must increase the normal error
+	@assert all(res_with_cov.M_stat_err .> res_with_cov_no_σ_Rmc².M_stat_err)
+	
+	# That's the main test: calculating with σ_Rmc² gives an M_stat_err that matches
+	# the "M_stat_err_without_σ_Rmc²" of the calculation with non-zero σ_Rmc²
+	@assert all(
+		res_with_cov.M_stat_err_without_σ_Rmc² .== res_with_cov_no_σ_Rmc².M_stat_err
+	)
+end
+
 # ╔═╡ 3a7ca7f1-39c6-4570-9a61-d69a6657b0c7
 @plutoonly function do_miscentering_test(;Σcritfactor, interpolate, do_asserts)
 	# Test: Miscentering correction correctly corrects
@@ -3149,6 +3214,7 @@ end
 # ╟─f1d226a2-4bc0-4b31-a2e8-92540a9e53d5
 # ╟─e3401c57-3fe6-4526-a128-387672b33863
 # ╠═bfd8b4e9-4b43-4720-bcc2-9263ac2d2362
+# ╠═5c9e62b4-f18c-4038-9e77-312ba057f057
 # ╠═8f2f297f-49b9-4dba-bb52-3868019aa1ea
 # ╠═5e945854-6856-4674-a41e-35672d1db672
 # ╠═1e328dce-cc54-43cd-afb4-c814b4366fa5
