@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.19
+# v1.0.1
 
 using Markdown
 using InteractiveUtils
@@ -1639,6 +1639,16 @@ begin
 	end
 end
 
+# ╔═╡ 6399685a-1e4d-41fc-a3cd-01c61bbf56cf
+begin
+    # Optionally, neglect κ when deprojecting
+    # (i.e. leave out the non-linear step of going from G+ -> ΔΣ and instead just
+    # assume G+ == ΔΣ)
+    abstract type AbstractNeglectKappa end
+    struct NeglectKappa <: AbstractNeglectKappa end
+    struct NoNeglectKappa <: AbstractNeglectKappa end
+end
+
 # ╔═╡ 18dccd90-f99f-11ee-1bf6-f1ca60e4fcd0
 begin
 	# Non-constant f = <Σ_crit^(-1)>
@@ -1696,6 +1706,43 @@ begin
 			ΔΣ, rMpc=RMpc, f∞, Ĝvalues,
 		)
 	end
+	function __calculate_ΔΣ_fgeneral_neglect_kappa(from_ΔΣ_function;
+		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
+		G, # typeof([1.0*u"Msun/pc^2"]),
+		f::typeof([1.0/u"Msun/pc^2"]),
+		R::typeof([1.0*u"Mpc"]),
+		interpolate::I,
+		extrapolate::E,
+		miscenter_correct::MC,
+	) where {
+		E<:AbstractExtrapolate,
+		I<:AbstractInterpolate,
+		MC<:AbstractMiscenterCorrect
+	}
+		@assert length(G) == length(f) == length(R) "G, f, R must have same length"
+
+		# Optionally, do miscenter correction as a preprocessing step before running
+		# the actual deprojection, at the level of the input G
+		G = miscenter_correct_G(miscenter_correct, interpolate; R=R, G=G)
+	
+		RMpc = R ./ u"Mpc"
+		Ĝvalues = G ./ u"Msun/pc^2"
+		Gf_unchecked = get_interpolation_RMpc(interpolate; RMpc, values=G .* f)
+		Ĝ = get_interpolation_RMpc(interpolate; RMpc, values=Ĝvalues)
+		
+		# We neglect κ, so we don't need G*f < 1
+		Gf = Gf_unchecked
+
+		f∞ = f[end]
+		pre = precompute(extrapolate, miscenter_correct; RMpc, f∞, Gf)
+		# We neglect κ, so ΔΣ = G
+		ΔΣ(RMpc) = (u"Msun/pc^2")*Ĝ(RMpc)
+
+		from_ΔΣ_function(
+			extrapolate, interpolate, miscenter_correct, pre;
+			ΔΣ, rMpc=RMpc, f∞, Ĝvalues,
+		)
+	end
 	
 	# Constant f = <Σ_crit^(-1)>
 	function __calculate_ΔΣ_fconst(from_ΔΣ_function;
@@ -1745,6 +1792,40 @@ begin
 			ΔΣ, rMpc=RMpc, f∞, Ĝvalues=G ./ u"Msun/pc^2",
 		)
 	end
+	function __calculate_ΔΣ_fconst_neglect_kappa(from_ΔΣ_function;
+		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
+		G, # typeof([1.0*u"Msun/pc^2"])
+		f::typeof(1.0/u"Msun/pc^2"),
+		R::typeof([1.0*u"Mpc"]),
+		interpolate::I,
+		extrapolate::E,
+		miscenter_correct::MC,
+	) where {
+		E<:AbstractExtrapolate,
+		I<:AbstractInterpolate,
+		MC<:AbstractMiscenterCorrect
+	}
+		@assert length(G) == length(R) "G, R must have same length"
+		
+		# Optionally, do miscenter correction as a preprocessing step before running
+		# the actual deprojection, at the level of the input G
+		G = miscenter_correct_G(miscenter_correct, interpolate; R=R, G=G)
+		
+		RMpc = R ./ u"Mpc"
+		Gf_unchecked = get_interpolation_RMpc(interpolate; RMpc, values=G .* f)
+		# We neglect κ, so we don't need G*f < 1
+		Gf = Gf_unchecked
+
+		f∞ = f
+		pre = precompute(extrapolate, miscenter_correct; RMpc, f∞, Gf)
+		# We neglect κ, so ΔΣ = G
+		ΔΣ(RMpc) = (1/f)*Gf(RMpc)
+
+		from_ΔΣ_function(
+			extrapolate, interpolate, miscenter_correct, pre;
+			ΔΣ, rMpc=RMpc, f∞, Ĝvalues=G ./ u"Msun/pc^2",
+		)
+	end
 
 	function calculate_from_ΔΣ(
 		from_ΔΣ_function;
@@ -1756,20 +1837,42 @@ begin
 		interpolate::I,
 		extrapolate::E,
 		miscenter_correct::MC,
+		neglect_kappa::NK,
 	) where {
 		E<:AbstractExtrapolate,
 		I<:AbstractInterpolate,
-		MC<:AbstractMiscenterCorrect
+		MC<:AbstractMiscenterCorrect,
+		NK<:AbstractNeglectKappa,
 	}
-		__calc_ΔΣ(f::typeof([1.0/u"Msun/pc^2"])) = __calculate_ΔΣ_fgeneral(
+		# Fully non-linear (i.e. explicitly convert G+ -> ΔΣ)
+		__calc_ΔΣ(
+			f::typeof([1.0/u"Msun/pc^2"]), ::NoNeglectKappa
+		) = __calculate_ΔΣ_fgeneral(
 			from_ΔΣ_function;
 			G, f, R, interpolate, extrapolate, miscenter_correct
 		)
-		__calc_ΔΣ(f::typeof(1.0/u"Msun/pc^2")) = __calculate_ΔΣ_fconst(
+		__calc_ΔΣ(
+			f::typeof(1.0/u"Msun/pc^2"), ::NoNeglectKappa
+		) = __calculate_ΔΣ_fconst(
 			from_ΔΣ_function;
 			G, f, R, interpolate, extrapolate, miscenter_correct
 		)
-		__calc_ΔΣ(f)
+
+		# Linear (i.e. assume G+ == ΔΣ, skip the conversion step)
+		__calc_ΔΣ(
+			f::typeof([1.0/u"Msun/pc^2"]), ::NeglectKappa
+		) = __calculate_ΔΣ_fgeneral_neglect_kappa(
+			from_ΔΣ_function;
+			G, f, R, interpolate, extrapolate, miscenter_correct
+		)
+		__calc_ΔΣ(
+			f::typeof(1.0/u"Msun/pc^2"), ::NeglectKappa
+		) = __calculate_ΔΣ_fconst_neglect_kappa(
+			from_ΔΣ_function;
+			G, f, R, interpolate, extrapolate, miscenter_correct
+		)
+		
+		__calc_ΔΣ(f, neglect_kappa)
 	end
 end
 
@@ -1783,14 +1886,16 @@ function calculate_M(;
 	interpolate::I,
 	extrapolate::E,
 	miscenter_correct::MC=MiscenterCorrectNone(),
+	neglect_kappa::NK=NoNeglectKappa(),
 ) where {
 	E<:AbstractExtrapolate,
 	I<:AbstractInterpolate,
-	MC<:AbstractMiscenterCorrect
+	MC<:AbstractMiscenterCorrect,
+	NK<:AbstractNeglectKappa,
 }
 	calculate_from_ΔΣ(
 		calculate_M_from_ΔΣ;
-		G, f, R, interpolate, extrapolate, miscenter_correct
+		G, f, R, interpolate, extrapolate, miscenter_correct, neglect_kappa
 	)
 end
 
@@ -1803,10 +1908,12 @@ function calculate_M_and_covariance_in_bins(;
 		interpolate::I,
 		extrapolate::E,
 		miscenter_correct::MC=MiscenterCorrectNone(),
+		neglect_kappa::NK=NoNeglectKappa(),
 	) where {
 		E<:AbstractExtrapolate,
 		I<:AbstractInterpolate,
-		MC<:AbstractMiscenterCorrect
+		MC<:AbstractMiscenterCorrect,
+		NK<:AbstractNeglectKappa,
 	}
 
 	__get_Rmc²(::MiscenterCorrectNone) = 0.0u"Mpc^2" # Unused dummy value
@@ -1842,7 +1949,7 @@ function calculate_M_and_covariance_in_bins(;
 		
 		M = calculate_M(;
 			G=input[1:end-1] .* u"Msun/pc^2",
-			f, R, interpolate, extrapolate,
+			f, R, interpolate, extrapolate, neglect_kappa,
 			miscenter_correct=new_miscenter_correct, # _not_ the original one!
 		)
 		M.(RMpc) ./ u"Msun"
@@ -2519,7 +2626,8 @@ end
 	let
 		ΔΣ_reconstructed = extrapolate -> calculate_from_ΔΣ(
 			_just_get_ΔΣ;
-			G, f, R, interpolate=InterpolateLnR(2), extrapolate, miscenter_correct=MiscenterCorrectNone()
+			G, f, R, interpolate=InterpolateLnR(2), extrapolate, miscenter_correct=MiscenterCorrectNone(),
+			neglect_kappa=NoNeglectKappa(),
 		)
 	
 		function _just_get_ΔΣ(
@@ -3049,6 +3157,42 @@ end
 	end
 )
 
+# ╔═╡ fad5d0ca-d5a8-412c-82cb-30e221ae3c38
+md"""
+## Neglecting kappa
+"""
+
+# ╔═╡ 0da5fb0b-d3ac-42fc-9424-0d3426b8a1ed
+@plutoonly let
+    calc_with_f(f, neglect_kappa) = calculate_M(;
+		R=[.2, .5, .7] .* u"Mpc",
+		G=[.3, .2, .1] .* u"Msun/pc^2",
+		f, neglect_kappa,
+		extrapolate=ExtrapolatePowerDecay(1),
+		interpolate=InterpolateR(1),
+	).([.2, .5, .7])
+
+	function do_check(f)
+		let
+			# Test: Neglecting kappa is significant for "large" f (>20% here)
+			M1 = calc_with_f(f, NoNeglectKappa())
+			M2 = calc_with_f(f, NeglectKappa())
+			@assert abs.(M1 ./ M2 .- 1)[1] > .2
+		end
+	
+		let
+			# Test: Neglecting kappa is ok for "small" f
+			M1 = calc_with_f(f .* 1e-10, NoNeglectKappa())
+			M2 = calc_with_f(f .* 1e-10, NeglectKappa())
+			@assert all(abs.(M1 ./ M2 .- 1) .< 1e-10)
+		end
+	end
+
+	# Do the tests for fconst and fgeneral
+	do_check(.9 ./ u"Msun/pc^2")
+	do_check(.9 ./ u"Msun/pc^2" .* [1, 1, 1])
+end
+
 # ╔═╡ dfd47416-7e8c-4d7e-8646-2a6df0c7050a
 md"""
 ## Quadgk stress tests
@@ -3187,6 +3331,7 @@ end
 # ╠═c449a9c8-1739-481f-87d5-982532c2955c
 # ╟─861b3ac9-14df-462a-9aa8-40ef9a521b81
 # ╠═df868364-b8c4-47f8-8f8f-860698b448b3
+# ╠═6399685a-1e4d-41fc-a3cd-01c61bbf56cf
 # ╠═18dccd90-f99f-11ee-1bf6-f1ca60e4fcd0
 # ╟─f4311bdf-db19-4886-93f2-51143e6845bc
 # ╟─f14ddc03-eb68-4029-a828-c78827482ead
@@ -3220,6 +3365,8 @@ end
 # ╠═1e328dce-cc54-43cd-afb4-c814b4366fa5
 # ╠═3a7ca7f1-39c6-4570-9a61-d69a6657b0c7
 # ╟─3f004698-b952-462f-8824-5c78ab1e08ad
+# ╟─fad5d0ca-d5a8-412c-82cb-30e221ae3c38
+# ╠═0da5fb0b-d3ac-42fc-9424-0d3426b8a1ed
 # ╟─dfd47416-7e8c-4d7e-8646-2a6df0c7050a
 # ╠═1659336c-d204-4372-a38a-63265a86330d
 # ╠═14c9cf73-484a-4baa-ba31-605c0f79a0d8
