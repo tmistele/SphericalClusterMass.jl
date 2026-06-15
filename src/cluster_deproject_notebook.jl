@@ -747,38 +747,6 @@ So we can use the simpler $f = \mathrm{const}$ formulas to calculate the $g_{\ma
   For other $n$: Just do it numerically, works quite well (see comments in code below) :)
 """
 
-# ╔═╡ c86ab391-86c3-44f8-b0b9-20fb70c4dc87
-function calculate_M_tail(
-	extrapolate::ExtrapolatePowerDecay, pre; θlim, f∞, rMpc, rMpcTail
-)
-	n = extrapolate.n
-	rMpcMax = rMpcTail
-	Gfmax = pre
-
-	if n == 1
-		(4*(rMpc*u"Mpc")^2/f∞)*Gfmax*(rMpcMax/rMpc)*(
-			1
-			- (1/2)*Gfmax*(rMpcMax/rMpc)*θlim
-			- cos(θlim)
-			+ (1/2)*Gfmax*(rMpcMax/rMpc)*cos(θlim)*sin(θlim)
-		) |> u"Msun"
-	elseif n == 2
-		(4*(rMpc*u"Mpc")^2/f∞)*(1/2)*Gfmax*(rMpcMax/rMpc)^2*(
-			θlim - cos(θlim)*sin(θlim)
-		) |> u"Msun"
-	else
-		# We could use that integral for the other n as well. It works well.
-		# But I've implemented them already and they're faster of course, so
-		# let's keep them for now.
-		ΔΣtail(rMpc) = (1/f∞)*Gfmax*(rMpcMax/rMpc)^n*(1 - Gfmax*(rMpcMax/rMpc)^n)^(2/n-1)
-
-		4*(rMpc*u"Mpc")^2*u"Msun/pc^2"*quadgk(
-			θ -> ΔΣtail(rMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
-			0, θlim
-		)[1] |> u"Msun"
-	end
-end
-
 # ╔═╡ fa506a97-1c00-488d-a4d1-18b878bc3640
 md"""
 ### NFW tail
@@ -993,18 +961,6 @@ begin
 			s(log(RMpcMax) - log(RMpc), idxs=1)
 		end
 	end
-end
-
-# ╔═╡ 6f593629-bd08-44ad-8941-54c95f131908
-function calculate_M_tail(
-	extrapolate::ExtrapolateNFW, pre; θlim, f∞, rMpc, rMpcTail
-)
-	(rs, ρs, _) = pre
-	r = rMpc*u"Mpc"
-	4*r^2*u"Msun/pc^2"*quadgk(
-		θ -> ΔΣ_NFW(r/sin(θ); ρs, rs)/u"Msun/pc^2" |> NoUnits,
-		0, θlim
-	)[1] |> u"Msun"
 end
 
 # ╔═╡ 3f004698-b952-462f-8824-5c78ab1e08ad
@@ -1410,6 +1366,98 @@ md"""
 ### Bulk/$M$ itself
 """
 
+# ╔═╡ 861b3ac9-14df-462a-9aa8-40ef9a521b81
+md"""
+## $\Delta \Sigma$ and more from $G_+$
+"""
+
+# ╔═╡ 6399685a-1e4d-41fc-a3cd-01c61bbf56cf
+begin
+    # Optionally, neglect κ when deprojecting
+    # (i.e. leave out the non-linear step of going from G+ -> ΔΣ and instead just
+    # assume G+ == ΔΣ)
+    abstract type AbstractNeglectKappa end
+    struct NeglectKappa <: AbstractNeglectKappa end
+    struct NoNeglectKappa <: AbstractNeglectKappa end
+end
+
+# ╔═╡ c86ab391-86c3-44f8-b0b9-20fb70c4dc87
+function calculate_M_tail(
+	extrapolate::ExtrapolatePowerDecay, ::NoNeglectKappa, pre;
+	θlim, f∞, rMpc, rMpcTail
+)
+	n = extrapolate.n
+	rMpcMax = rMpcTail
+	Gfmax = pre
+
+	if n == 1
+		(4*(rMpc*u"Mpc")^2/f∞)*Gfmax*(rMpcMax/rMpc)*(
+			1
+			- (1/2)*Gfmax*(rMpcMax/rMpc)*θlim
+			- cos(θlim)
+			+ (1/2)*Gfmax*(rMpcMax/rMpc)*cos(θlim)*sin(θlim)
+		) |> u"Msun"
+	elseif n == 2
+		(4*(rMpc*u"Mpc")^2/f∞)*(1/2)*Gfmax*(rMpcMax/rMpc)^2*(
+			θlim - cos(θlim)*sin(θlim)
+		) |> u"Msun"
+	else
+		# We could use that integral for the other n as well. It works well.
+		# But I've implemented them already and they're faster of course, so
+		# let's keep them for now.
+		ΔΣtail(rMpc) = (1/f∞)*Gfmax*(rMpcMax/rMpc)^n*(1 - Gfmax*(rMpcMax/rMpc)^n)^(2/n-1)
+
+		4*(rMpc*u"Mpc")^2*u"Msun/pc^2"*quadgk(
+			θ -> ΔΣtail(rMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
+			0, θlim
+		)[1] |> u"Msun"
+	end
+end
+
+# ╔═╡ 5788ae15-34ca-4230-8d6f-52b2585123ce
+function calculate_M_tail(
+	extrapolate::ExtrapolatePowerDecay, ::NeglectKappa, pre;
+	θlim, f∞, rMpc, rMpcTail
+)
+	n = extrapolate.n
+	rMpcMax = rMpcTail
+	Gfmax = pre
+
+	if n == 1
+		(4*(rMpc*u"Mpc")^2/f∞)*Gfmax*(rMpcMax/rMpc)*(
+			1
+			- cos(θlim)
+		) |> u"Msun"
+	elseif n == 2
+		(4*(rMpc*u"Mpc")^2/f∞)*(1/2)*Gfmax*(rMpcMax/rMpc)^2*(
+			θlim - cos(θlim)*sin(θlim)
+		) |> u"Msun"
+	else
+		# We could use that integral for the other n as well. It works well.
+		# But I've implemented them already and they're faster of course, so
+		# let's keep them for now.
+		ΔΣtail(rMpc) = (1/f∞)*Gfmax*(rMpcMax/rMpc)^n
+
+		4*(rMpc*u"Mpc")^2*u"Msun/pc^2"*quadgk(
+			θ -> ΔΣtail(rMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
+			0, θlim
+		)[1] |> u"Msun"
+	end
+end
+
+# ╔═╡ 6f593629-bd08-44ad-8941-54c95f131908
+function calculate_M_tail(
+	extrapolate::ExtrapolateNFW, ::NoNeglectKappa, pre;
+	θlim, f∞, rMpc, rMpcTail
+)
+	(rs, ρs, _) = pre
+	r = rMpc*u"Mpc"
+	4*r^2*u"Msun/pc^2"*quadgk(
+		θ -> ΔΣ_NFW(r/sin(θ); ρs, rs)/u"Msun/pc^2" |> NoUnits,
+		0, θlim
+	)[1] |> u"Msun"
+end
+
 # ╔═╡ c449a9c8-1739-481f-87d5-982532c2955c
 begin
 	# The tail needs to be calculated analytically. Reason: The tail goes to R -> ∞.
@@ -1422,6 +1470,7 @@ begin
 		extrapolate::E,
 		interpolate::I,
 		::Union{MiscenterCorrectNone, MiscenterCorrectSmallRmcPreprocessG},
+		neglect_kappa,
 		pre;
 		ΔΣ, rMpc, f∞, Ĝvalues,
 	) where {E<:AbstractExtrapolate, I<:AbstractInterpolate}
@@ -1433,10 +1482,12 @@ begin
 				θ -> ΔΣ(rMpc/sin(θ))/u"Msun/pc^2" |> NoUnits,
 				θlim, π/2
 			)[1] |> u"Msun"
-			tail = calculate_M_tail(extrapolate, pre; θlim, f∞, rMpc, rMpcTail)
+			tail = calculate_M_tail(
+				extrapolate, neglect_kappa, pre; θlim, f∞, rMpc, rMpcTail)
 			bulk + tail
 		else
-			calculate_M_tail(extrapolate, pre; θlim=π/2, f∞, rMpc, rMpcTail)
+			calculate_M_tail(
+				extrapolate, neglect_kappa, pre; θlim=π/2, f∞, rMpc, rMpcTail)
 		end
 	end
 	
@@ -1444,6 +1495,7 @@ begin
 		extrapolate::Union{ExtrapolatePowerDecay, ExtrapolateNFW},
 		interpolate::I,
 		miscenter_correct::MiscenterCorrectSmallRmc,
+		neglect_kappa,
 		pre;
 		ΔΣ, rMpc, f∞, Ĝvalues,
 	) where I <: AbstractInterpolate
@@ -1552,19 +1604,16 @@ begin
 				) |> u"Msun"
 			end
 			
-			tail = calculate_M_tail(extrapolate, pre; θlim, f∞, rMpc, rMpcTail)
+			tail = calculate_M_tail(
+				extrapolate, neglect_kappa, pre; θlim, f∞, rMpc, rMpcTail)
 			
 			bulk + boundary + tail
 		else
-			calculate_M_tail(extrapolate, pre; θlim=π/2, f∞, rMpc, rMpcTail)
+			calculate_M_tail(
+				extrapolate, neglect_kappa, pre; θlim=π/2, f∞, rMpc, rMpcTail)
 		end
 	end
 end
-
-# ╔═╡ 861b3ac9-14df-462a-9aa8-40ef9a521b81
-md"""
-## $\Delta \Sigma$ and more from $G_+$
-"""
 
 # ╔═╡ df868364-b8c4-47f8-8f8f-860698b448b3
 begin
@@ -1574,7 +1623,8 @@ begin
 	
 	function precompute(
 		::ExtrapolatePowerDecay,
-		::Union{MiscenterCorrectNone,MiscenterCorrectSmallRmcPreprocessG};
+		::Union{MiscenterCorrectNone,MiscenterCorrectSmallRmcPreprocessG},
+		::Union{NeglectKappa, NoNeglectKappa};
 		RMpc, f∞, Gf
 	)
 		# Save the last Gf data point, which is the pre-factor for the 
@@ -1592,7 +1642,8 @@ begin
 	#  A = G₊_observed(Rmax) ( 1 + ϵ² * (1/4) * (4 - n²) )
 	function precompute(
 		extrapolate::ExtrapolatePowerDecay,
-		miscenter_correct::MiscenterCorrectSmallRmc;
+		miscenter_correct::MiscenterCorrectSmallRmc,
+		::Union{NeglectKappa, NoNeglectKappa};
 		RMpc, f∞, Gf
 	)
 		n = extrapolate.n
@@ -1604,7 +1655,8 @@ begin
 	
 	function precompute(
 		extrapolate::ExtrapolateNFW,
-		::Union{MiscenterCorrectNone,MiscenterCorrectSmallRmcPreprocessG};
+		::Union{MiscenterCorrectNone,MiscenterCorrectSmallRmcPreprocessG},
+		::NoNeglectKappa;
 		RMpc, f∞, Gf
 	)
 		RMpcMax = maximum(RMpc)
@@ -1622,7 +1674,8 @@ begin
 	# with ϵ = Rmc/Rmax and (D F)(R) ≡ (1/4) * (F(R) - R F'(R) - R² F''(R))	
 	function precompute(
 		extrapolate::ExtrapolateNFW,
-		miscenter_correct::MiscenterCorrectSmallRmc;
+		miscenter_correct::MiscenterCorrectSmallRmc,
+		::NoNeglectKappa;
 		RMpc, f∞, Gf
 	)
 		RMpcMax = maximum(RMpc)
@@ -1637,22 +1690,16 @@ begin
 		)
 		(rs, ρs, f∞)
 	end
-end
 
-# ╔═╡ 6399685a-1e4d-41fc-a3cd-01c61bbf56cf
-begin
-    # Optionally, neglect κ when deprojecting
-    # (i.e. leave out the non-linear step of going from G+ -> ΔΣ and instead just
-    # assume G+ == ΔΣ)
-    abstract type AbstractNeglectKappa end
-    struct NeglectKappa <: AbstractNeglectKappa end
-    struct NoNeglectKappa <: AbstractNeglectKappa end
+	# TODO: Implement NFW with `NeglectKappa` (where matching to NFW is done
+	#       assuming G == ΔΣ and then extrapolation also ignores κ)
 end
 
 # ╔═╡ 18dccd90-f99f-11ee-1bf6-f1ca60e4fcd0
 begin
 	# Non-constant f = <Σ_crit^(-1)>
-	function __calculate_ΔΣ_fgeneral(from_ΔΣ_function;
+	function __calculate_ΔΣ_fgeneral(
+		from_ΔΣ_function, neglect_kappa::NoNeglectKappa;
 		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
 		G, # typeof([1.0*u"Msun/pc^2"]),
 		f::typeof([1.0/u"Msun/pc^2"]),
@@ -1693,7 +1740,7 @@ begin
 		end
 
 		f∞ = f[end]
-		pre = precompute(extrapolate, miscenter_correct; RMpc, f∞, Gf)
+		pre = precompute(extrapolate, miscenter_correct, neglect_kappa; RMpc, f∞, Gf)
 		IR∞ = calculate_I_R∞(extrapolate, interpolate, pre; RMpc, Gf)
 		JR∞ = calculate_J_R∞(extrapolate, interpolate, pre; RMpc, Gf, Ĝ, I=IR∞)
 
@@ -1702,11 +1749,12 @@ begin
 		)
 
 		from_ΔΣ_function(
-			extrapolate, interpolate, miscenter_correct, pre;
+			extrapolate, interpolate, miscenter_correct, neglect_kappa, pre;
 			ΔΣ, rMpc=RMpc, f∞, Ĝvalues,
 		)
 	end
-	function __calculate_ΔΣ_fgeneral_neglect_kappa(from_ΔΣ_function;
+	function __calculate_ΔΣ_fgeneral(
+		from_ΔΣ_function, neglect_kappa::NeglectKappa;
 		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
 		G, # typeof([1.0*u"Msun/pc^2"]),
 		f::typeof([1.0/u"Msun/pc^2"]),
@@ -1734,18 +1782,19 @@ begin
 		Gf = Gf_unchecked
 
 		f∞ = f[end]
-		pre = precompute(extrapolate, miscenter_correct; RMpc, f∞, Gf)
+		pre = precompute(extrapolate, miscenter_correct, neglect_kappa; RMpc, f∞, Gf)
 		# We neglect κ, so ΔΣ = G
 		ΔΣ(RMpc) = (u"Msun/pc^2")*Ĝ(RMpc)
 
 		from_ΔΣ_function(
-			extrapolate, interpolate, miscenter_correct, pre;
+			extrapolate, interpolate, miscenter_correct, neglect_kappa, pre;
 			ΔΣ, rMpc=RMpc, f∞, Ĝvalues,
 		)
 	end
 	
 	# Constant f = <Σ_crit^(-1)>
-	function __calculate_ΔΣ_fconst(from_ΔΣ_function;
+	function __calculate_ΔΣ_fconst(
+		from_ΔΣ_function, neglect_kappa::NoNeglectKappa;
 		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
 		G, # typeof([1.0*u"Msun/pc^2"])
 		f::typeof(1.0/u"Msun/pc^2"),
@@ -1783,16 +1832,17 @@ begin
 		end
 
 		f∞ = f
-		pre = precompute(extrapolate, miscenter_correct; RMpc, f∞, Gf)
+		pre = precompute(extrapolate, miscenter_correct, neglect_kappa; RMpc, f∞, Gf)
 		IR∞ = calculate_I_R∞(extrapolate, interpolate, pre; RMpc, Gf)
 		ΔΣ(RMpc) = (1/f)*(Gf(RMpc)/(1 - Gf(RMpc)))*exp(-IR∞(RMpc))
 
 		from_ΔΣ_function(
-			extrapolate, interpolate, miscenter_correct, pre;
+			extrapolate, interpolate, miscenter_correct, neglect_kappa, pre;
 			ΔΣ, rMpc=RMpc, f∞, Ĝvalues=G ./ u"Msun/pc^2",
 		)
 	end
-	function __calculate_ΔΣ_fconst_neglect_kappa(from_ΔΣ_function;
+	function __calculate_ΔΣ_fconst(
+		from_ΔΣ_function, neglect_kappa::NeglectKappa;
 		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
 		G, # typeof([1.0*u"Msun/pc^2"])
 		f::typeof(1.0/u"Msun/pc^2"),
@@ -1817,12 +1867,12 @@ begin
 		Gf = Gf_unchecked
 
 		f∞ = f
-		pre = precompute(extrapolate, miscenter_correct; RMpc, f∞, Gf)
+		pre = precompute(extrapolate, miscenter_correct, neglect_kappa; RMpc, f∞, Gf)
 		# We neglect κ, so ΔΣ = G
 		ΔΣ(RMpc) = (1/f)*Gf(RMpc)
 
 		from_ΔΣ_function(
-			extrapolate, interpolate, miscenter_correct, pre;
+			extrapolate, interpolate, miscenter_correct, neglect_kappa, pre;
 			ΔΣ, rMpc=RMpc, f∞, Ĝvalues=G ./ u"Msun/pc^2",
 		)
 	end
@@ -1844,35 +1894,17 @@ begin
 		MC<:AbstractMiscenterCorrect,
 		NK<:AbstractNeglectKappa,
 	}
-		# Fully non-linear (i.e. explicitly convert G+ -> ΔΣ)
-		__calc_ΔΣ(
-			f::typeof([1.0/u"Msun/pc^2"]), ::NoNeglectKappa
-		) = __calculate_ΔΣ_fgeneral(
-			from_ΔΣ_function;
-			G, f, R, interpolate, extrapolate, miscenter_correct
-		)
-		__calc_ΔΣ(
-			f::typeof(1.0/u"Msun/pc^2"), ::NoNeglectKappa
-		) = __calculate_ΔΣ_fconst(
-			from_ΔΣ_function;
+		__calc_ΔΣ(f::typeof([1.0/u"Msun/pc^2"])) = __calculate_ΔΣ_fgeneral(
+			from_ΔΣ_function, neglect_kappa;
 			G, f, R, interpolate, extrapolate, miscenter_correct
 		)
 
-		# Linear (i.e. assume G+ == ΔΣ, skip the conversion step)
-		__calc_ΔΣ(
-			f::typeof([1.0/u"Msun/pc^2"]), ::NeglectKappa
-		) = __calculate_ΔΣ_fgeneral_neglect_kappa(
-			from_ΔΣ_function;
-			G, f, R, interpolate, extrapolate, miscenter_correct
-		)
-		__calc_ΔΣ(
-			f::typeof(1.0/u"Msun/pc^2"), ::NeglectKappa
-		) = __calculate_ΔΣ_fconst_neglect_kappa(
-			from_ΔΣ_function;
+		__calc_ΔΣ(f::typeof(1.0/u"Msun/pc^2")) = __calculate_ΔΣ_fconst(
+			from_ΔΣ_function, neglect_kappa;
 			G, f, R, interpolate, extrapolate, miscenter_correct
 		)
 		
-		__calc_ΔΣ(f, neglect_kappa)
+		__calc_ΔΣ(f)
 	end
 end
 
@@ -2634,6 +2666,7 @@ end
 			extrapolate,
 			interpolate,
 			miscenter_correct,
+			neglect_kappa,
 			pre;
 			ΔΣ, rMpc, f∞, Ĝvalues,
 		)
@@ -3177,7 +3210,10 @@ md"""
 			# Test: Neglecting kappa is significant for "large" f (>20% here)
 			M1 = calc_with_f(f, NoNeglectKappa())
 			M2 = calc_with_f(f, NeglectKappa())
-			@assert abs.(M1 ./ M2 .- 1)[1] > .2
+			@assert abs.(M1 ./ M2 .- 1)[begin] > .2
+			# Last data point should *not* match exactly
+			# (tail formulas are also different when neglecting κ)
+			@assert abs.(M1 ./ M2 .- 1)[end] > .05
 		end
 	
 		let
@@ -3321,6 +3357,7 @@ end
 # ╟─6bfbe740-2993-4ae1-ad30-54ea923e0e1c
 # ╟─dfe40541-396b-485b-bcb6-d70730a24867
 # ╠═c86ab391-86c3-44f8-b0b9-20fb70c4dc87
+# ╠═5788ae15-34ca-4230-8d6f-52b2585123ce
 # ╟─fa506a97-1c00-488d-a4d1-18b878bc3640
 # ╠═6f593629-bd08-44ad-8941-54c95f131908
 # ╠═0134ff7b-b627-4016-9a4b-d686207111b3
@@ -3330,8 +3367,8 @@ end
 # ╟─ea9fc39e-ba29-4502-927f-d2ca77e3b4e7
 # ╠═c449a9c8-1739-481f-87d5-982532c2955c
 # ╟─861b3ac9-14df-462a-9aa8-40ef9a521b81
-# ╠═df868364-b8c4-47f8-8f8f-860698b448b3
 # ╠═6399685a-1e4d-41fc-a3cd-01c61bbf56cf
+# ╠═df868364-b8c4-47f8-8f8f-860698b448b3
 # ╠═18dccd90-f99f-11ee-1bf6-f1ca60e4fcd0
 # ╟─f4311bdf-db19-4886-93f2-51143e6845bc
 # ╟─f14ddc03-eb68-4029-a828-c78827482ead
