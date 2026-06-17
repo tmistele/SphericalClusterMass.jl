@@ -2034,6 +2034,8 @@ md"""
 
 - no NFW extrapolation for now
 - no fancy miscentering correction for now (i.e. only `MiscenterCorrectSmallRmcPreprocessG`)
+
+**TODO**: Add more tests to cover e.g. NeglectKappa/NoNeglectKappa/... error propagation
 """
 
 # ╔═╡ 1e5d4d11-a6cc-4f07-a36c-e39ee6df494b
