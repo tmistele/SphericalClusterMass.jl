@@ -2028,6 +2028,263 @@ function calculate_M_and_covariance_in_bins(;
 	)
 end
 
+# ╔═╡ 89af146a-1a4e-4ac1-8de4-ea9b6f9c0165
+md"""
+## Density
+
+- no NFW extrapolation for now
+- no fancy miscentering correction for now (i.e. only `MiscenterCorrectSmallRmcPreprocessG`)
+"""
+
+# ╔═╡ 1e5d4d11-a6cc-4f07-a36c-e39ee6df494b
+begin
+	function calculate_ρ_from_ΔΣ(
+		extrapolate::E,
+		interpolate::I,
+		::Union{
+			MiscenterCorrectNone,
+			MiscenterCorrectSmallRmcPreprocessG
+		},
+		neglect_kappa::NK,
+		pre;
+		ΔΣ, rMpc, f∞, Ĝvalues
+	) where {
+		E<:AbstractExtrapolate,
+		I<:AbstractInterpolate,
+		NK<:AbstractNeglectKappa,
+	}
+		rMpcTail = maximum(rMpc)
+	
+		ρ(rMpc) = if rMpc < rMpcTail
+			θlim = asin(rMpc/rMpcTail)
+			numeric_integral = (1/(rMpc*π))*QuadGK.quadgk(
+				θ -> (
+					(ΔΣ(rMpc/sin(θ)) - ΔΣ(rMpc))/(cos(θ)^2)
+					+ 2 * ΔΣ(rMpc/sin(θ))
+				) / u"Msun/pc^2" |> NoUnits,
+				θlim, π/2
+			)[1] * u"Msun/pc^2/Mpc" |> u"Msun/Mpc^3"
+			analytical_tail = calculate_ρ_tail(
+				extrapolate, neglect_kappa, pre;
+				θlim, f∞, rMpc, rMpcTail, ΔΣ
+			)
+			numeric_integral + analytical_tail
+		else
+			calculate_ρ_tail(
+				extrapolate, neglect_kappa, pre;
+				θlim=π/2, f∞, rMpc, rMpcTail, ΔΣ
+			)
+		end
+	end
+
+	function calculate_ρ_tail(
+		extrapolate::ExtrapolatePowerDecay,
+		::NeglectKappa,
+		pre;
+		θlim, f∞, rMpc, rMpcTail, ΔΣ
+	)
+		n = extrapolate.n
+		rMpcMax = rMpcTail
+		Gfmax = pre
+	
+		if n == 1
+			if θlim == π/2
+				@assert rMpc == rMpcTail
+				(1/(rMpc*u"Mpc"*π))*(Gfmax/f∞)*(rMpcMax/rMpc) |> u"Msun/Mpc^3"
+			else
+				@assert rMpc != rMpcTail
+				cosθlim = sqrt(1 - (rMpc/rMpcMax)^2)
+				sinθlim = rMpc/rMpcMax
+				tanθlim = sinθlim/cosθlim
+				(1/(rMpc*u"Mpc"*π))*(Gfmax/f∞)*(rMpcMax/rMpc)*(
+					(
+						-1
+						+1/cosθlim
+						-tanθlim*(
+							ΔΣ(rMpc) * (f∞/Gfmax) * (rMpc/rMpcMax)
+						)
+					)
+					+ 2*(
+						1
+						- cosθlim
+					)
+				) |> u"Msun/Mpc^3"
+			end
+		else
+			# We could use that integral for the other n as well. It works well.
+			# But I've implemented them already and they're faster of course, so
+			# let's keep them for now.
+			ΔΣtail(rMpc) = (1/f∞)*Gfmax*(rMpcMax/rMpc)^n
+	
+			quadgk_result = (1/(rMpc*π))*QuadGK.quadgk(
+				θ -> (
+					# CARE: - The first ΔΣ has argument r/sin θ which is always >= Rmax
+					#         Thus we use ΔΣtail
+					#       - The second ΔΣ has argument r which is always <= Rmax
+					#         Thus we use the non-tail ΔΣ
+					(ΔΣtail(rMpc/sin(θ)) - ΔΣ(rMpc))/(cos(θ)^2)
+					+ 2 * ΔΣtail(rMpc/sin(θ))
+				) / u"Msun/pc^2" |> NoUnits,
+				0, θlim
+			)[1] * u"Msun/pc^2/Mpc" |> u"Msun/Mpc^3"
+		end
+	end
+
+	function calculate_ρ_tail(
+		extrapolate::ExtrapolatePowerDecay,
+		::NoNeglectKappa,
+		pre;
+		θlim, f∞, rMpc, rMpcTail, ΔΣ
+	)
+		n = extrapolate.n
+		rMpcMax = rMpcTail
+		Gfmax = pre
+	
+		if n == 1
+			if θlim == π/2
+				@assert rMpc == rMpcTail
+				(1/(rMpc*u"Mpc"*π))*(Gfmax/f∞)*(rMpcMax/rMpc) |> u"Msun/Mpc^3"
+			else
+				@assert rMpc != rMpcTail
+				cosθlim = sqrt(1 - (rMpc/rMpcMax)^2)
+				sinθlim = rMpc/rMpcMax
+				tanθlim = sinθlim/cosθlim
+				(1/(rMpc*u"Mpc"*π))*(Gfmax/f∞)*(rMpcMax/rMpc)*(
+					(
+						-1
+						+Gfmax*(rMpcMax/rMpc)*θlim
+						+1/cosθlim
+						-tanθlim*(
+							ΔΣ(rMpc) * (f∞/Gfmax) * (rMpc/rMpcMax)
+							+ Gfmax*rMpcMax/rMpc
+						)
+					)
+					+ 2*(
+						1
+						- Gfmax*(rMpcMax/rMpc)*θlim/2
+						- cosθlim
+						+ Gfmax*(rMpcMax/rMpc)*sin(2θlim)/4
+					)
+				) |> u"Msun/Mpc^3"
+			end
+		else
+			# We could use that integral for the other n as well. It works well.
+			# But I've implemented them already and they're faster of course, so
+			# let's keep them for now.
+			ΔΣtail(rMpc) = (1/f∞)*Gfmax*(rMpcMax/rMpc)^n*(1 - Gfmax*(rMpcMax/rMpc)^n)^(2/n-1)
+	
+			quadgk_result = (1/(rMpc*π))*QuadGK.quadgk(
+				θ -> (
+					# CARE: - The first ΔΣ has argument r/sin θ which is always >= Rmax
+					#         Thus we use ΔΣtail
+					#       - The second ΔΣ has argument r which is always <= Rmax
+					#         Thus we use the non-tail ΔΣ
+					(ΔΣtail(rMpc/sin(θ)) - ΔΣ(rMpc))/(cos(θ)^2)
+					+ 2 * ΔΣtail(rMpc/sin(θ))
+				) / u"Msun/pc^2" |> NoUnits,
+				0, θlim
+			)[1] * u"Msun/pc^2/Mpc" |> u"Msun/Mpc^3"
+		end
+	end
+
+	function calculate_ρ_fgeneral(;
+		# Type omitted b/c of ForwardDiff which requires allowing Dual numbers
+		G, # typeof([1.0*u"Msun/pc^2"]),
+		f::typeof([1.0/u"Msun/pc^2"]),
+		R::typeof([1.0*u"Mpc"]),
+		interpolate::I,
+		extrapolate::E,
+		miscenter_correct::MC,
+		neglect_kappa::NK,
+	) where {
+		E<:AbstractExtrapolate,
+		I<:AbstractInterpolate,
+		MC<:AbstractMiscenterCorrect,
+		NK<:AbstractNeglectKappa,
+	}
+		calculate_from_ΔΣ(
+			calculate_ρ_from_ΔΣ;
+			G, f, R, interpolate, extrapolate, miscenter_correct, neglect_kappa,
+		)
+	end
+
+	function calculate_ρ_and_covariance_in_bins(;
+			G::typeof([1.0*u"Msun/pc^2"]),
+			f,
+			R::typeof([1.0*u"Mpc"]),
+			G_covariance::typeof([1.0 1.0] .* u"(Msun/pc^2)^2"),
+			interpolate::I,
+			extrapolate::E,
+			neglect_kappa::NK,
+			miscenter_correct::MC=MiscenterCorrectNone(),
+		) where {
+			E<:AbstractExtrapolate,
+			I<:AbstractInterpolate,
+			MC<:AbstractMiscenterCorrect,
+			NK<:AbstractNeglectKappa,
+		}
+	
+		__get_Rmc²(::MiscenterCorrectNone) = 0.0u"Mpc^2" # Unused dummy value
+		__get_Rmc²(::MiscenterCorrectSmallRmc) = miscenter_correct.Rmc²
+		__get_Rmc²(::MiscenterCorrectSmallRmcPreprocessG) = miscenter_correct.Rmc²
+		
+		__get_σ_Rmc²(::MiscenterCorrectNone) = 0.0u"Mpc^2" # Unused dummy value
+		__get_σ_Rmc²(::MiscenterCorrectSmallRmc) = miscenter_correct.σ_Rmc²
+		__get_σ_Rmc²(::MiscenterCorrectSmallRmcPreprocessG) = miscenter_correct.σ_Rmc²
+	
+		# Input for ForwardDiff -- everything in one vector and no units
+		input = fill(NaN, length(G)+1)
+		input[1:end-1] .= G ./ u"Msun/pc^2"
+		input[end] = __get_Rmc²(miscenter_correct) / u"Mpc^2"
+	
+		# Covariance matrix matching this input
+		input_cov = zeros(length(G)+1, length(G)+1)
+		input_cov[1:end-1, 1:end-1] = G_covariance ./ u"(Msun/pc^2)^2"
+		input_cov[end] = __get_σ_Rmc²(miscenter_correct)^2 / u"(Mpc^2)^2"
+	
+		RMpc = R ./ u"Mpc" .|> NoUnits
+	
+		# Forward-diff
+		# - requires a single argument as input
+		# - no units as input or output
+		ρ_func = input -> let
+			
+			# The value of this `new_...` should be identical to `miscenter_correct`.
+			# This is just to make it clear to `ForwardDiff.jl` where `Rmc²` is used.
+			new_miscenter_correct = SphericalClusterMass.copy_with_other_Rmc²(
+				miscenter_correct, input[end] .* u"Mpc^2"
+			)
+			
+			myρ = calculate_ρ_fgeneral(;
+				G=input[1:end-1] .* u"Msun/pc^2",
+				f, R, interpolate, extrapolate, neglect_kappa,
+				miscenter_correct=new_miscenter_correct, # _not_ the original one!
+			)
+			
+			myρ.(RMpc) ./ u"Msun/Mpc^3" .|> NoUnits
+		end
+	
+		# We could just `DiffResults` to avoid calculating `value` ourselves. That is
+		# also done during the jacobian calculation anyway.
+		# But: I tried that and in some cases the `value` was then off. Only by <1% but
+		# still. Don't like that it's off at all. So let's just call gobs_fun(...)
+		# once ourselves and lose a little perf :)
+		value = ρ_func(input)
+		jac = ForwardDiff.jacobian(ρ_func, input)
+	
+		# `ρ_func` doesn't have units. So we have to put them back ourselves.
+		ρ = value .* u"Msun/Mpc^3"
+		# See here https://juliadiff.org/ForwardDiff.jl/stable/user/api/
+		# jac[α, i] = ∂gobs(α)/∂x[i]
+		# So the correct thing is jac * Cov * transpose(jac)
+		# (and _not_ transpose(jac) * Cov * jac)
+		ρ_stat_cov = jac * input_cov * jac' .* u"(Msun/Mpc^3)^2"
+		ρ_stat_err = sqrt.(LinearAlgebra.diag(ρ_stat_cov))
+			
+		(; ρ, ρ_stat_cov, ρ_stat_err)
+	end
+end
+
 # ╔═╡ f4311bdf-db19-4886-93f2-51143e6845bc
 md"""
 # Tests
@@ -3229,6 +3486,74 @@ md"""
 	do_check(.9 ./ u"Msun/pc^2" .* [1, 1, 1])
 end
 
+# ╔═╡ 7f8b0e9f-250e-4f09-9640-32157fafde15
+md"""
+## Density
+"""
+
+# ╔═╡ 72d0d24c-eb32-473a-970f-24a90df8e791
+@plutoonly let
+	ρ0 = 2e13u"Msun/Mpc^3"
+	ρ̄m = 8e10u"Msun/Mpc^3" # Realistic value for z ~ 0.25
+
+	# 1/r^2 SIS. That we should be able to recover almost exactly
+	ρ(r) = let
+		r_23 = .1u"Mpc"
+		power = 2.
+		ρ0 * (1.0u"Mpc"/r_23)^(3-power)*(1.0u"Mpc"/r)^power
+	end
+
+	Mslow(r) = 4π*QuadGK.quadgk(rr -> rr^2*ρ(rr), .0u"Mpc", r)[1] |> u"Msun"
+	ΔΣslow(R) = (
+		Mslow(R)/(π*R^2)
+		- 4*R*QuadGK.quadgk(θ -> ρ(R/cos(θ))/(4*sin(θ) + 3 - cos(2θ)), 0, π/2)[1]
+	) |> u"Msun/pc^2"
+    Σslow(R) = (
+        2u"Mpc"*QuadGK.quadgk(zMpc -> ρ(sqrt(R^2+zMpc^2*u"Mpc^2")), 0, 1_000)[1]
+    ) |> u"Msun/pc^2"
+
+	fc_factor = 1.0 # Try mismatch about Σcrit¯¹ in data vs reconstruct (e.g. 1e-2)
+	Σcritinv = let
+		zs = .4
+		zl = .2
+
+		cosmo = Cosmology.cosmology(; h=.7, OmegaM=.3, OmegaR=.0)
+		zs_∞ = 2.5
+
+		Dl = Cosmology.angular_diameter_dist(cosmo, zl)
+		Ds = Cosmology.angular_diameter_dist(cosmo, zs)
+		Dls = Cosmology.angular_diameter_dist(cosmo, zl, zs)
+			
+		(4π*u"G/c^2")*Dl*Dls/Ds|> u"pc^2/Msun"
+	end
+
+	R = logrange(1., 15; length=13) .* u"Mpc"
+	G = ΔΣslow.(R) ./ (1 .- Σslow.(R) .* Σcritinv)
+	f = ones(length(R)) .* Σcritinv .* fc_factor
+	
+	ρreconstructed = calculate_ρ_fgeneral(;
+		G, f, R,
+		interpolate=InterpolateLnR(2),
+		extrapolate=ExtrapolatePowerDecay(1),
+		miscenter_correct=MiscenterCorrectNone(),
+		neglect_kappa=NoNeglectKappa(),
+	).(R ./ u"Mpc")
+
+	# The actual test
+	@assert all(abs.(ρreconstructed ./ ρ.(R) .- 1) .< 1e-2)
+
+	# Debug plot
+	plot(
+		rMpc -> ρ(rMpc*u"Mpc")/ρ̄m,
+		R[begin] / u"Mpc", R[end] / u"Mpc";
+		label="true ρ(r)",
+		
+		xscale=:log10, yscale=:log10,
+		yminorticks=9,
+	)	
+	plot!(R, ρreconstructed ./ ρ̄m, marker=:diamond, label="(reconstructed, with κ)")
+end
+
 # ╔═╡ dfd47416-7e8c-4d7e-8646-2a6df0c7050a
 md"""
 ## Quadgk stress tests
@@ -3370,6 +3695,8 @@ end
 # ╠═6399685a-1e4d-41fc-a3cd-01c61bbf56cf
 # ╠═df868364-b8c4-47f8-8f8f-860698b448b3
 # ╠═18dccd90-f99f-11ee-1bf6-f1ca60e4fcd0
+# ╟─89af146a-1a4e-4ac1-8de4-ea9b6f9c0165
+# ╠═1e5d4d11-a6cc-4f07-a36c-e39ee6df494b
 # ╟─f4311bdf-db19-4886-93f2-51143e6845bc
 # ╟─f14ddc03-eb68-4029-a828-c78827482ead
 # ╠═9dd1c7c4-a44c-4b5c-a810-b6b171ac2569
@@ -3404,6 +3731,8 @@ end
 # ╟─3f004698-b952-462f-8824-5c78ab1e08ad
 # ╟─fad5d0ca-d5a8-412c-82cb-30e221ae3c38
 # ╠═0da5fb0b-d3ac-42fc-9424-0d3426b8a1ed
+# ╟─7f8b0e9f-250e-4f09-9640-32157fafde15
+# ╠═72d0d24c-eb32-473a-970f-24a90df8e791
 # ╟─dfd47416-7e8c-4d7e-8646-2a6df0c7050a
 # ╠═1659336c-d204-4372-a38a-63265a86330d
 # ╠═14c9cf73-484a-4baa-ba31-605c0f79a0d8
