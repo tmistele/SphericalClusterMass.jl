@@ -1095,8 +1095,9 @@ module __demo
 	end
 end
 
-# ╔═╡ 8193ca3f-749d-4734-b2c9-9db46a0458c0
-const Gf_NFW_approx_miscentering_applied = let
+# ╔═╡ 43788a60-d4bd-4dc1-80ec-85a3a3f81eab
+# Keeping this around as a test case
+@plutoonly const __old_Gf_NFW_approx_miscentering_applied = let
 
 	# That's a helper function defined as
 	#   H(lnx; p) = p*(g - f)/(1 - p * f)
@@ -1171,7 +1172,7 @@ const Gf_NFW_approx_miscentering_applied = let
 		)
 	end
 
-	∂²_lnx_H(x; p) = if abs(x-1) < 1e-2
+	∂²_lnx_H(x, p) = if abs(x-1) < 1e-2
 		# This becomes numerically tricky for x close to 1.
 		# So just use linear Taylor expansion there
 		a = 4p*(
@@ -1248,8 +1249,8 @@ const Gf_NFW_approx_miscentering_applied = let
 		dH(lnx; p) = ForwardDiff.derivative(lny -> H(lny; p), lnx)
 		d²H(lnx; p) = ForwardDiff.derivative(lny -> dH(lny; p), lnx)
 	
-		@assert abs(∂²_lnx_H(.1; p=.2)/d²H(log(.1); p=.2) - 1) < 1e-11
-		@assert abs(∂²_lnx_H(1.1; p=.2)/d²H(log(1.1); p=.2) - 1) < 1e-11
+		@assert abs(∂²_lnx_H(.1, .2)/d²H(log(.1); p=.2) - 1) < 1e-11
+		@assert abs(∂²_lnx_H(1.1, .2)/d²H(log(1.1); p=.2) - 1) < 1e-11
 	end
 
 	# This is:
@@ -1265,7 +1266,170 @@ const Gf_NFW_approx_miscentering_applied = let
 		Gf = Gf_NFW(R; rs, ρs, f∞)
 
 		fc2rsρs = f∞*2*rs*ρs |> NoUnits
-		∂_terms = ∂²_lnx_H(R/rs; p=fc2rsρs)
+		x = R/rs
+		p = fc2rsρs
+		∂_terms = ∂²_lnx_H(x, p)
+
+		Gf - (1/4) * (Rmc²/R^2) * (4*Gf - ∂_terms)
+	end
+end
+
+# ╔═╡ 4728bc0a-d8e2-4dba-aa6f-33e905d7cd80
+const Gf_NFW_approx_miscentering_applied = let
+
+	# That's a helper function defined as
+	#   H(lnx; p) = p*(g - f)/(1 - p * f)
+	# Compare:
+	#   Gf_NFW(R) = fc*(2rsρs)*(g(x=r/Rs) - f(...))/(1 - f_c * (2rsρs) * f(...))
+	# So we have:
+	#   Gf_NFW(R) = H(ln(R/rs); p=f_c*2rsρs)
+	#
+	# We need H''(lnx; p).
+	# 
+	# We could just let ForwardDiff.jl calculate this (and it's actually not
+	# horrible, we had this in a previous version). But we can speed this part
+	# up a lot by actually working out the explicit formulas.
+	# Formulas from Mathematica, see `faster-NFW-miscentering-formulas.nb`
+	∂_lnx_fNFW(x, sq, my_atan_sq) = let
+		if x < 1
+			-(
+				(x-1)*(1+2x^2) + 6x^2*sq*my_atan_sq
+			) / (
+				(1+x)^2*(-1+x)^3
+			)
+		else
+			-(1+2x^2)/(-1+x^2)^2 + 6x^2*my_atan_sq/(x^2-1)^(5/2)
+		end
+	end
+
+	∂²_lnx_fNFW(x, sq, my_atan_sq) = let
+		x^2 * if x < 1
+			(
+				(x-1)*(11+4x^2)
+				+6*(2+3x^2)*sq*my_atan_sq
+			) / (
+				(1+x)^3*(x-1)^4
+			)
+		else
+			(11+4x^2)/(x^2-1)^3 - 6*(2+3x^2)*my_atan_sq/(x^2-1)^(7/2)
+		end
+	end
+
+	∂_lnx_gNFW(x, sq, my_atan_sq) = let
+		sq_atan_sq = if x < 1
+			-sq*my_atan_sq
+		else
+			sq*my_atan_sq
+		end
+		(
+			4*(2-3x^2)*sq_atan_sq + 2*(x-1)*(
+				x^2+
+				(x^2-1)*log(4)
+				-2(x^2-1)*log(x)
+			)
+		) / (
+			(x-1)^2*x^2*(1+x)
+		)
+	end
+
+	∂²_lnx_gNFW(x, sq, my_atan_sq) = let
+		sq_atan_sq = if x < 1
+			-sq*my_atan_sq
+		else
+			sq*my_atan_sq
+		end
+		(
+			4*sq_atan_sq*(4-10x^2+9x^4)+
+			+2*(x-1)*(x^2-4x^4+4*(-1+x^2)^2*log(x/2))
+		) / (
+			(x-1)*x^2*(x^2-1)^2
+		)
+	end
+
+	∂²_lnx_H(x, p, _fNFW, _gNFW, sq, my_atan_sq) = if abs(x-1) < 1e-2
+		# This becomes numerically tricky for x close to 1.
+		# So just use linear Taylor expansion there
+		a = 4p*(
+			-6525 + 903p - 206p^2 +
+			9450log(2) - 1710p*log(2) + 276p^2*log(2)
+		)/( 175(-3 + p)^3)
+		b = 16p*(
+			675(-72+35*log(8))
+			+ p*(
+				(5310-5889p+338p^2)
+				+ (-3150+(2325-166p)p)*log(8)
+			)
+		) / (875*(p-3)^4)
+		a + b*log(x)
+	else
+		df = ∂_lnx_fNFW(x, sq, my_atan_sq)
+		dg = ∂_lnx_gNFW(x, sq, my_atan_sq)
+		
+		d²f = ∂²_lnx_fNFW(x, sq, my_atan_sq)
+		d²g = ∂²_lnx_gNFW(x, sq, my_atan_sq)
+		
+		A = _gNFW - _fNFW
+		B = _fNFW
+
+		dA = dg - df
+		dB = df
+
+		d²A = d²g - d²f
+		d²B = d²f
+		
+		(
+			2p^2*dA*dB/(1-p*B)^2
+			+ 2p^3*A*dB^2/(1-p*B)^3
+			+ p*d²A/(1 - p*B)
+			+ p^2*A*d²B/(1-p*B)^2
+		)
+	end
+
+	# Faster versions of the global fNFW / gNFW
+	myfNFW(x, my_atan_sq) = if x < 1
+		(1/(1-x^2))*( -1 + (2/sqrt(1-x^2)) * my_atan_sq)
+	elseif x == 1
+		1/3
+	else
+		(1/(x^2-1))*( 1 - (2/sqrt(x^2-1)) * my_atan_sq)
+	end
+
+	mygNFW(x, my_atan_sq) = if x < 1
+		(2/x^2)*( (2/sqrt(1-x^2)) * my_atan_sq + log(x/2) )
+	elseif x == 1
+		2*(1+log(1/2))
+	else
+		(2/x^2)*( (2/sqrt(x^2-1)) * my_atan_sq + log(x/2) )
+	end
+
+	# This is:
+	#  (G₊_tail - ϵ² D G₊_tail)(R)
+	# with ϵ = Rmc/Rmax and (D F)(R) ≡ (1/4) * (4F(R) - R F'(R) - R² F''(R))	
+	# Note that D can be written as
+	#   DF(R) = (1/4) * (4F - ∂²_(ln R) F)
+	# And note ∂²_(ln R) ... = ∂²_(ln (R/rs)) ...
+	# Instaed of removing miscentering using our O(ϵ²) formula,we're applying it.
+	(
+		R; Rmc², rs, ρs, f∞
+	) -> let
+		# Some things that are needed repeatedly below.
+		fc2rsρs = f∞*2*ρs*rs |> NoUnits
+		x = R/rs |> NoUnits
+
+		sq = sqrt(abs((1-x)/(1+x)))
+		my_atan_sq = x < 1 ? atanh(sq) : atan(sq)
+		
+		_fNFW = myfNFW(x, my_atan_sq)
+		_gNFW = mygNFW(x, my_atan_sq)
+		
+
+		# Without that `NoUnits`, ForwardDiff.jl isn't happy...
+		ΔΣ_thing = fc2rsρs*(_gNFW - _fNFW) |> NoUnits
+		Σ_thing = fc2rsρs*_fNFW |> NoUnits
+		Gf = ΔΣ_thing / (1 - Σ_thing)
+ 
+		p = fc2rsρs
+		∂_terms = ∂²_lnx_H(x, p, _fNFW, _gNFW, sq, my_atan_sq)
 
 		Gf - (1/4) * (Rmc²/R^2) * (4*Gf - ∂_terms)
 	end
@@ -1288,6 +1452,23 @@ end
 	)
 	# From Mathematica at rs=R, where things are tricky
 	@assert abs(test2/0.0577428-1) < 1e-6
+
+	# Test against "old" (not optimized) version.
+    # Test x < 1, x == 1, x > 1. And also abs(x-1) < 1e-2 but not exactly 1
+    rs = .5u"Mpc"
+    R = [.25, .5 .* .995, .5, .5 .* 1.005, 1.] .* u"Mpc"
+    Rmc² = (.2u"Mpc")^2
+    ρs=1e14u"Msun/Mpc^3"
+    f∞=1e-3/u"Msun/pc^2"
+
+    @assert count(R ./ rs .== 1) == 1
+    @assert count(abs.(R ./ rs .- 1) .< 1e-2) == 3
+
+    new = Gf_NFW_approx_miscentering_applied.(R; Rmc², rs, ρs, f∞)
+    old = __old_Gf_NFW_approx_miscentering_applied.(R; Rmc², rs, ρs, f∞)
+
+    @assert all(abs.(new ./ old .- 1) .< 1e-15)
+    @info "all good :)"
 end
 
 # ╔═╡ f42c2a3a-ac7f-45cd-84dc-8eccd147ccab
@@ -3688,7 +3869,8 @@ end
 # ╟─fa506a97-1c00-488d-a4d1-18b878bc3640
 # ╠═6f593629-bd08-44ad-8941-54c95f131908
 # ╠═0134ff7b-b627-4016-9a4b-d686207111b3
-# ╠═8193ca3f-749d-4734-b2c9-9db46a0458c0
+# ╠═43788a60-d4bd-4dc1-80ec-85a3a3f81eab
+# ╠═4728bc0a-d8e2-4dba-aa6f-33e905d7cd80
 # ╠═ae4b04aa-f4a2-4060-89a6-211eb40a1808
 # ╠═f42c2a3a-ac7f-45cd-84dc-8eccd147ccab
 # ╟─ea9fc39e-ba29-4502-927f-d2ca77e3b4e7
