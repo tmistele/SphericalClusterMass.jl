@@ -141,6 +141,26 @@ result = calculate_M_and_covariance_in_bins(
 
 The function `calculate_M` also supports the `miscenter_correct` argument.
 
+### Strictly linear deprojection when neglecting κ
+
+The deprojection formulas implemented here are non-linear due to having to convert from reduced shear to shear.
+This step can be omitted by assuming that the convergence κ is negligible, in which case the deprojection procedure is linear in the observed shear data points.
+This can be achived by passing the parameter `neglect_kappa=NeglectKappa()`,
+
+```julia
+result = calculate_M_and_covariance_in_bins(
+    R=R,
+    G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
+    f=1e-3 .* [.9, .9, .9] ./ u"Msun/pc^2",
+    G_covariance=diagm((1e2 .* [.3, .2, .1] .* u"Msun/pc^2") .^ 2),
+    extrapolate=ExtrapolatePowerDecay(1),
+    interpolate=InterpolateR(1),
+    # This means we assume κ is negligible
+    # The default is `neglect_kappa=NoNeglectKappa()` which takes κ into account.
+    neglect_kappa=NeglectKappa(),
+)
+```
+
 ### Extrapolate assuming NFW profile
 
 To extrapolate assuming an NFW profile use `ExtrapolateNFW(cm)` where `cm` describes a mass-concentration relation.
@@ -161,4 +181,22 @@ result = calculate_M_and_covariance_in_bins(
     interpolate=InterpolateR(1),
 )
 ```
+
+### Density profiles
+
+To calculate density instead of mass profiles, use `calculate_ρ_and_covariance_in_bins`, for example:
+
+```julia
+result = calculate_ρ_and_covariance_in_bins(
+    R=R,
+    G=1e3 .* [.3, .2, .1] .* u"Msun/pc^2",
+    f=1e-3 .* [.9, .9, .9] ./ u"Msun/pc^2",
+    G_covariance=diagm((1e2 .* [.3, .2, .1] .* u"Msun/pc^2") .^ 2),
+    extrapolate=ExtrapolatePowerDecay(1),
+    interpolate=InterpolateLnR(2),
+    neglect_kappa=NoNeglectKappa(),
+)
+```
+
+The parameters are the same as for the mass profile calculation, with the exception of NFW extraplation and miscentering correction using `MiscenterCorrectSmallRmc`, which are not supported (so far).
 
